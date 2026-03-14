@@ -17,8 +17,8 @@ class WaveformConfigService : PersistentStateComponent<WaveformConfigService.Sta
         var variableNames: MutableList<String> = mutableListOf(),
         var trackedVariables: MutableList<String> = mutableListOf(),
         var liveWatchFrequency: Int = 50,
-        var liveWatchMode: String = "auto",  // auto / monitor / halt-resume
-        var resolvedAddresses: MutableMap<String, String> = mutableMapOf()  // varName → "addr:type"
+        var telnetPort: Int = 4444,
+        var resolvedAddresses: MutableMap<String, String> = mutableMapOf()
     )
 
     private var myState = State()

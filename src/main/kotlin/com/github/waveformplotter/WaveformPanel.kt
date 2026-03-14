@@ -51,6 +51,11 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         toolTipText = "Sampling frequency (Hz)"
     }
     private val freqLabel = JLabel("Hz")
+    private val portSpinner = JSpinner(SpinnerNumberModel(4444, 1, 65535, 1)).apply {
+        preferredSize = Dimension(70, preferredSize.height)
+        toolTipText = "OpenOCD Telnet port"
+    }
+    private val portLabel = JLabel("Port:")
 
     // 变量输入
     private val varField = JTextField(18)
@@ -138,11 +143,14 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         controlBar.add(Box.createHorizontalStrut(8))
 
         liveWatchBtn.foreground = colorIdle
-        liveWatchBtn.toolTipText = "Start/Stop Live Watch (non-invasive memory monitoring)"
+        liveWatchBtn.toolTipText = "Start/Stop Live Watch (non-invasive memory monitoring via OpenOCD Telnet)"
         liveWatchBtn.addActionListener { toggleLiveWatch() }
         controlBar.add(liveWatchBtn)
         controlBar.add(freqSpinner)
         controlBar.add(freqLabel)
+        controlBar.add(Box.createHorizontalStrut(8))
+        controlBar.add(portLabel)
+        controlBar.add(portSpinner)
 
         controlBar.add(Box.createHorizontalGlue())
         controlBar.add(sessionStatusLabel)
@@ -277,8 +285,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         }
 
         val freq = freqSpinner.value as Int
+        val port = portSpinner.value as Int
 
-        // 先解析地址（需要 MCU 暂停），然后启动采集
+        // 先解析地址（需要 MCU 暂停），然后通过 Telnet 启动采集
         liveWatchBtn.text = "\u23F3 Resolving..."
         liveWatchBtn.isEnabled = false
         liveStatusLabel.text = "Resolving addresses...  "
@@ -295,11 +304,22 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
                     return@invokeLater
                 }
 
-                liveWatchService.startLiveWatch(session, freq)
+                liveWatchService.startLiveWatch(port, freq)
+
+                if (liveWatchService.lastError != null) {
+                    liveWatchBtn.text = "\u25B6 Live"
+                    liveWatchBtn.isEnabled = true
+                    liveWatchBtn.foreground = colorError
+                    liveStatusLabel.text = liveWatchService.lastError + "  "
+                    liveStatusLabel.foreground = colorError
+                    return@invokeLater
+                }
+
                 liveWatchBtn.text = "\u25A0 Live"
                 liveWatchBtn.isEnabled = true
                 liveWatchBtn.foreground = colorRunning
                 freqSpinner.isEnabled = false
+                portSpinner.isEnabled = false
                 updateLiveStatus()
             }
         }
@@ -310,6 +330,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         liveWatchBtn.text = "\u25B6 Live"
         liveWatchBtn.foreground = colorIdle
         freqSpinner.isEnabled = true
+        portSpinner.isEnabled = true
         liveStatusLabel.text = ""
     }
 
@@ -322,10 +343,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
             liveStatusLabel.foreground = colorError
             liveStatusLabel.toolTipText = error
         } else {
-            val mode = liveWatchService.watchMode.name.lowercase()
-            val server = liveWatchService.serverType.name.lowercase()
             val freq = freqSpinner.value
-            liveStatusLabel.text = "Live: $server/$mode@${freq}Hz (${liveWatchService.sampleCount})  "
+            val port = portSpinner.value
+            liveStatusLabel.text = "Live: telnet:$port@${freq}Hz (${liveWatchService.sampleCount})  "
             liveStatusLabel.foreground = colorRunning
             liveStatusLabel.toolTipText = null
         }
@@ -418,6 +438,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         s.variableNames = channelCheckboxes.keys.toMutableList()
         s.trackedVariables = collector.trackedVariables.toMutableList()
         s.liveWatchFrequency = freqSpinner.value as Int
+        s.telnetPort = portSpinner.value as Int
     }
 
     private fun restoreConfig() {
@@ -428,6 +449,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
             addChannelCheckbox(name, checked = tracked.contains(name))
         }
         freqSpinner.value = s.liveWatchFrequency.coerceIn(1, 100)
+        portSpinner.value = s.telnetPort.coerceIn(1, 65535)
     }
 
     private fun csvField(s: String): String {
