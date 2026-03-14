@@ -2,7 +2,10 @@
 
 [中文](README.md) | **English**
 
-A CLion plugin for real-time waveform plotting + FFT spectrum analysis during embedded debugging. Designed for OpenOCD / DAP-Link users.
+A CLion plugin for real-time waveform plotting + FFT spectrum analysis during embedded debugging.
+
+Designed for **OpenOCD** users (supports CMSIS-DAP / DAP-Link / ST-Link / J-Link).
+CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills the gap for DAP-Link and other debuggers.
 
 ## Features
 
@@ -51,6 +54,20 @@ A CLion plugin for real-time waveform plotting + FFT spectrum analysis during em
 | OpenOCD (DAP-Link, ST-Link, J-Link) | ✅ | ✅ Telnet `mdw` |
 | J-Link GDB Server | ✅ | ✅ Telnet `memU32` |
 | Other GDB Servers | ✅ | ⚠️ Untested |
+
+## Prerequisites
+
+- **CLion 2024.3+**
+- **ARM toolchain** (`arm-none-eabi-gcc`, `arm-none-eabi-nm`, etc.)
+- **OpenOCD** (Telnet port defaults to 4444)
+
+> **Recommended**: Install [STM32CubeCLT](https://www.st.com/en/development-tools/stm32cubeclt.html) (STM32Cube Command Line Tools) — bundles the arm-none-eabi toolchain + OpenOCD + STM32Programmer in one package.
+>
+> Or install manually:
+> - [ARM GNU Toolchain](https://developer.arm.com/downloads/-/arm-gnu-toolchain-downloads) (arm-none-eabi-gcc)
+> - [OpenOCD](https://openocd.org/) (or via your package manager)
+
+Make sure `arm-none-eabi-nm` and `openocd` are on your system PATH so CLion can find them.
 
 ## Usage
 
