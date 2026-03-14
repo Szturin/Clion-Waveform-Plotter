@@ -1,5 +1,7 @@
 # Waveform Plotter v1.2 — CLion Embedded Debug Plugin
 
+**中文** | [English](README_EN.md)
+
 CLion 插件，为嵌入式调试提供实时波形绘制 + FFT 频谱分析功能。专为 OpenOCD / DAP-Link 用户设计。
 
 ## 功能
@@ -143,4 +145,10 @@ Live Watch 利用 ARM Cortex-M 调试架构中的 MEM-AP（Memory Access Port）
 
 ## License
 
-MIT
+本软件以**非商业许可**开源发布。
+
+**允许**：出于个人学习、教育、非商业目的自由使用、复制、修改和分发本软件。
+
+**禁止**：未经作者书面许可，不得将本软件的全部或部分用于任何商业用途。
+
+如需商业授权，请在 GitHub 提交 Issue 联系。
