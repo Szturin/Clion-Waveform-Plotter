@@ -224,6 +224,14 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         saveConfig()
     }
 
+    /** 外部调用：添加变量到绘图器（从右键菜单等） */
+    fun addVariableByName(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty() || channelCheckboxes.containsKey(trimmed)) return
+        addChannelCheckbox(trimmed, checked = true)
+        saveConfig()
+    }
+
     private fun addChannelCheckbox(name: String, checked: Boolean) {
         if (channelCheckboxes.containsKey(name)) return
 

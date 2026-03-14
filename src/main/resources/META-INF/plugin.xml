@@ -22,4 +22,13 @@
 
         <projectService serviceImplementation="com.github.waveformplotter.WaveformConfigService"/>
     </extensions>
+
+    <actions>
+        <action id="WaveformPlotter.AddToPlotter"
+                class="com.github.waveformplotter.AddToPlotterAction"
+                text="Add to Waveform Plotter"
+                description="Add selected variable to Waveform Plotter">
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
 </idea-plugin>
