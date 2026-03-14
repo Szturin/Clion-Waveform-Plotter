@@ -1,0 +1,25 @@
+<idea-plugin>
+    <id>com.github.waveformplotter</id>
+    <name>Waveform Plotter</name>
+    <vendor>waveform-plotter</vendor>
+    <description><![CDATA[
+        Real-time waveform plotter for embedded debugging.
+        Passively listens to debug session pause events (breakpoints, step, manual pause).
+        Auto-lists Watch panel variables with checkboxes for selective plotting.
+        Zero MCU intrusion — plot waveforms alongside normal debugging.
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.modules.xdebugger</depends>
+    <depends>com.intellij.clion</depends>
+    <depends>com.intellij.nativeDebug</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+        <toolWindow id="Waveform Plotter"
+                    anchor="bottom"
+                    factoryClass="com.github.waveformplotter.WaveformToolWindowFactory"
+                    icon="/icons/waveform.svg"/>
+
+        <projectService serviceImplementation="com.github.waveformplotter.WaveformConfigService"/>
+    </extensions>
+</idea-plugin>
