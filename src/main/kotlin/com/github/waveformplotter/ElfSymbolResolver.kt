@@ -20,8 +20,11 @@ class ElfSymbolResolver {
 
     private val log = Logger.getInstance(ElfSymbolResolver::class.java)
 
-    /** 缓存: 变量名 → 符号信息 */
+    /** 缓存: 符号名(demangled) → 符号信息 */
     private val symbolCache = ConcurrentHashMap<String, SymbolInfo>()
+
+    /** 短名索引: 变量短名 → 完整符号名列表（用于函数内 static 变量模糊匹配） */
+    private val shortNameIndex = ConcurrentHashMap<String, MutableList<String>>()
 
     /** 上次解析的 ELF 文件路径 */
     @Volatile
@@ -66,8 +69,9 @@ class ElfSymbolResolver {
         }
 
         return try {
-            // 不用 -g（排除 static 变量）和 --size-sort（丢弃无 size 的符号）
-            val process = ProcessBuilder(nmPath, "--print-size", elfPath)
+            // -C: demangle C++ 名（函数内 static 变量会从 _ZZ...E8sawtooth 变成 func()::sawtooth）
+            // 不用 -g（排除 static）和 --size-sort（丢弃无 size 符号）
+            val process = ProcessBuilder(nmPath, "-C", "--print-size", elfPath)
                 .redirectErrorStream(true)
                 .start()
 
@@ -79,7 +83,9 @@ class ElfSymbolResolver {
             }
 
             symbolCache.clear()
+            shortNameIndex.clear()
             parseNmOutput(output)
+            buildShortNameIndex()
             lastElfPath = elfPath
             lastElfModified = elfFile.lastModified()
             log.info("Loaded ${symbolCache.size} symbols from $elfPath")
@@ -95,21 +101,39 @@ class ElfSymbolResolver {
      * @return WatchEntry，如果找不到返回 null
      */
     fun resolveVariable(varName: String): LiveWatchService.WatchEntry? {
-        // 支持简单的结构体成员: "pid.output" → 先查精确匹配
+        // 1. 精确匹配（全局变量、文件作用域 static）
         val symbol = symbolCache[varName]
         if (symbol != null) {
             val dataType = inferDataTypeFromSize(symbol.size)
             return LiveWatchService.WatchEntry(varName, symbol.address, dataType, dataType.byteSize)
         }
 
-        // 对于 "struct.member" 格式，在 nm 中只能看到整个结构体
-        // 无法自动解析成员偏移，返回 null 让 GDB 后备方案处理
+        // 2. 短名模糊匹配（函数内 static 变量）
+        //    用户输入 "sawtooth" → 匹配 "chassis_task_proc()::sawtooth"
+        val candidates = shortNameIndex[varName]
+        if (candidates != null && candidates.isNotEmpty()) {
+            val fullName = if (candidates.size == 1) {
+                candidates[0]
+            } else {
+                // 多个同名变量（不同函数内），选第一个并警告
+                log.warn("Multiple matches for '$varName': $candidates, using first")
+                candidates[0]
+            }
+            val matched = symbolCache[fullName]
+            if (matched != null) {
+                val dataType = inferDataTypeFromSize(matched.size)
+                log.info("Fuzzy matched '$varName' → '$fullName'")
+                return LiveWatchService.WatchEntry(varName, matched.address, dataType, dataType.byteSize)
+            }
+        }
+
+        // 3. 结构体成员等复杂表达式 → GDB 回退
         if (varName.contains('.') || varName.contains("->") || varName.contains('[')) {
             log.info("Complex expression '$varName' requires GDB resolution")
             return null
         }
 
-        log.info("Symbol '$varName' not found in ELF")
+        log.info("Symbol '$varName' not found in ELF (neither global nor function-local static)")
         return null
     }
 
@@ -130,6 +154,7 @@ class ElfSymbolResolver {
 
     fun clear() {
         symbolCache.clear()
+        shortNameIndex.clear()
         lastElfPath = null
         lastElfModified = 0
     }
@@ -178,6 +203,26 @@ class ElfSymbolResolver {
                     symbolCache[name] = SymbolInfo(name, addr, 4, section)
                 }
             }
+        }
+    }
+
+    /**
+     * 构建短名索引
+     * "chassis_task_proc()::sawtooth" → shortName "sawtooth"
+     * "main()::counter" → shortName "counter"
+     * "chassis_vx" → shortName "chassis_vx"（直接匹配，不需要索引）
+     */
+    private fun buildShortNameIndex() {
+        for (fullName in symbolCache.keys) {
+            // 提取 :: 后面的短名（C++ 函数内 static）
+            val colonIdx = fullName.lastIndexOf("::")
+            if (colonIdx >= 0) {
+                val shortName = fullName.substring(colonIdx + 2)
+                shortNameIndex.getOrPut(shortName) { mutableListOf() }.add(fullName)
+            }
+        }
+        if (shortNameIndex.isNotEmpty()) {
+            log.info("Built short name index: ${shortNameIndex.size} entries (function-local statics)")
         }
     }
 
