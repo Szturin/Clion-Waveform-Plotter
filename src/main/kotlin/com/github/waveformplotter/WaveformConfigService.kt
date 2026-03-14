@@ -18,7 +18,11 @@ class WaveformConfigService : PersistentStateComponent<WaveformConfigService.Sta
         var trackedVariables: MutableList<String> = mutableListOf(),
         var liveWatchFrequency: Int = 50,
         var telnetPort: Int = 4444,
-        var resolvedAddresses: MutableMap<String, String> = mutableMapOf()
+        var resolvedAddresses: MutableMap<String, String> = mutableMapOf(),
+        // UI 设置
+        var fontSize: Int = 12,
+        var lineWidth: Float = 2.0f,
+        var refreshFps: Int = 30
     )
 
     private var myState = State()

@@ -36,6 +36,9 @@ class LiveWatchService(
     /** 已解析的变量 → 地址/类型映射 */
     private val watchEntries = ConcurrentHashMap<String, WatchEntry>()
 
+    /** ELF 符号解析器（无暂停方案） */
+    val elfResolver = ElfSymbolResolver()
+
     /** 采集定时器 */
     private var timer: Timer? = null
 
@@ -77,6 +80,28 @@ class LiveWatchService(
                 INT32, UINT32, FLOAT -> 4
                 DOUBLE -> 8
             }
+    }
+
+    // ─── ELF 符号表解析（无需暂停 MCU）───
+
+    /**
+     * 尝试通过 ELF 文件解析变量地址（无暂停方案）
+     * @return 成功解析的数量
+     */
+    fun resolveFromElf(elfPath: String, varNames: List<String>): Int {
+        if (!elfResolver.loadSymbols(elfPath)) return 0
+
+        var resolved = 0
+        for (name in varNames) {
+            if (watchEntries.containsKey(name)) { resolved++; continue }
+            val entry = elfResolver.resolveVariable(name)
+            if (entry != null) {
+                watchEntries[name] = entry
+                resolved++
+                log.info("ELF resolved '$name' -> 0x${entry.address.toString(16)}, type=${entry.dataType}")
+            }
+        }
+        return resolved
     }
 
     // ─── 地址解析（通过 GDB，需 MCU halted）───

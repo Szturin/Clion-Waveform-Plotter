@@ -25,11 +25,16 @@ class DebugSessionListener(
     private var sessionListener: XDebugSessionListener? = null
     private var busConnection: MessageBusConnection? = null
 
+    /** Debug 会话启动时回调（首次暂停，用于 ELF 解析等初始化） */
+    var onSessionStarted: ((XDebugSession) -> Unit)? = null
+
     /** MCU 暂停时回调（用于 Live Watch 地址解析时机） */
     var onSessionPaused: ((XDebugSession) -> Unit)? = null
 
     /** MCU 恢复运行时回调（用于 Live Watch 启动采集） */
     var onSessionResumed: ((XDebugSession) -> Unit)? = null
+
+    private var firstPause = true
 
     /** 获取当前活跃的调试会话 */
     fun getCurrentSession(): XDebugSession? = currentSession
@@ -66,8 +71,14 @@ class DebugSessionListener(
         detachFromSession()
         currentSession = session
 
+        firstPause = true
         val listener = object : XDebugSessionListener {
             override fun sessionPaused() {
+                // 首次暂停时触发 onSessionStarted（用于 ELF 路径获取等）
+                if (firstPause) {
+                    firstPause = false
+                    onSessionStarted?.invoke(session)
+                }
                 // 调试器暂停（断点命中/单步/手动暂停）— 采集数据点
                 collector.collectFromSession(session)
                 onSessionPaused?.invoke(session)

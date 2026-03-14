@@ -1,6 +1,6 @@
-# Waveform Plotter — CLion Embedded Debug Plugin
+# Waveform Plotter v1.1 — CLion Embedded Debug Plugin
 
-CLion 插件，为嵌入式调试提供实时波形绘制功能。
+CLion 插件，为嵌入式调试提供实时波形绘制功能。专为 OpenOCD / DAP-Link 用户设计。
 
 ## 功能
 
@@ -10,26 +10,35 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。
 - 适合配合 "Evaluate and Log" 断点使用
 
 ### Live Watch 实时监控
+
 - **非侵入式**：通过 SWD MEM-AP 直读 MCU 内存，CPU 不停
+- **零暂停启动**：自动从 ELF 符号表解析变量地址，无需暂停 MCU
 - 支持 1-100Hz 采样频率（默认 50Hz）
-- 自动探测 GDB Server 类型（OpenOCD / J-Link）
-- 变量地址自动解析，支持全局变量、结构体成员、数组元素
+- 通过 OpenOCD Telnet 端口直连（绕过 GDB all-stop 限制）
+- 变量实时显示数据类型和当前数值
 - 支持数据类型：int8/16/32, uint8/16/32, float, double
 
 ### 波形显示
+
 - 多通道叠加显示（最多 8 通道）
+- **万向自由拖拽**（鼠标左键上下左右任意方向平移）
 - Y 轴自动缩放 + 手动缩放（滚轮）
-- X 轴缩放（Shift+滚轮）+ 拖拽平移
-- 鼠标悬停显示数值
+- X 轴缩放（Shift+滚轮）
+- 鼠标悬停十字线 + 带背景框的数值 tooltip
 - NaN 自动断线
 - CSV 导出
+
+### 可定制 UI
+
+- 齿轮设置按钮：字体大小、波形线宽、刷新率（30/60fps）
+- 设置自动持久化
 
 ## 支持的调试环境
 
 | 调试器 | 被动模式 | Live Watch |
 |--------|---------|------------|
-| OpenOCD（含 DAP-Link, ST-Link, J-Link） | ✅ | ✅ `monitor mdw` |
-| J-Link GDB Server | ✅ | ✅ `monitor memU32` |
+| OpenOCD（含 DAP-Link, ST-Link, J-Link） | ✅ | ✅ Telnet `mdw` |
+| J-Link GDB Server | ✅ | ✅ Telnet `memU32` |
 | 其他 GDB Server | ✅ | ⚠️ 需测试 |
 
 ## 使用方法
@@ -37,7 +46,7 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。
 ### 安装
 1. `./gradlew buildPlugin`
 2. CLion → Settings → Plugins → 齿轮图标 → Install Plugin from Disk
-3. 选择 `build/distributions/clion-waveform-plotter-0.1.0.zip`
+3. 选择 `build/distributions/clion-waveform-plotter-1.1.0.zip`
 4. 重启 CLion
 
 ### 被动模式
@@ -48,19 +57,23 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。
 
 ### Live Watch 模式
 1. 添加并勾选变量
-2. 启动调试，设断点让 MCU **暂停一次**（用于地址解析）
-3. 点 **Live** 按钮
-4. 恢复 MCU 运行，波形开始实时更新
+2. 启动调试（插件自动从 ELF 加载符号表）
+3. 点 **▶ Live** 按钮
+4. MCU 运行时波形实时更新
+
+> **ELF 优先解析**：如果 ELF 符号表中能找到变量地址，无需暂停 MCU。
+> 对于结构体成员、复杂表达式等 ELF 无法解析的情况，会自动回退到 GDB 解析（需 MCU 暂停一次）。
 
 > Live Watch 只能监控有固定地址的变量（全局变量、静态变量）。
 > 建议监控变量加 `volatile` 关键字，避免 D-Cache 导致读到旧值。
 
 ### 交互操作
+- **左键拖拽**：万向平移（上下左右任意方向）
 - **滚轮**：缩放 Y 轴
 - **Shift+滚轮**：缩放 X 轴
-- **左键拖拽**：平移查看历史
 - **右键单击**：重置视图
 - **右键变量**：删除变量
+- **⚙ 设置**：字体大小、线宽、刷新率
 
 ## 构建
 
@@ -77,7 +90,8 @@ src/main/kotlin/com/github/waveformplotter/
 ├── WaveformToolWindowFactory.kt  # 工具窗口入口
 ├── WaveformPanel.kt              # 主面板 UI
 ├── PlotCanvas.kt                 # 波形绘制引擎
-├── LiveWatchService.kt           # Live Watch 实时采集服务
+├── LiveWatchService.kt           # Live Watch 实时采集服务（Telnet）
+├── ElfSymbolResolver.kt          # ELF 符号表解析（零暂停地址解析）
 ├── WatchVariableCollector.kt     # 被动模式变量采集
 ├── DebugSessionListener.kt       # 调试会话生命周期管理
 ├── DataBuffer.kt                 # 环形缓冲区
@@ -86,12 +100,21 @@ src/main/kotlin/com/github/waveformplotter/
 
 ## 技术原理
 
+### Live Watch 架构
+```
+┌─ 地址解析（二选一，自动优先 ELF）─────────────────────┐
+│ ① ELF: arm-none-eabi-nm → 符号表 → 地址（无需暂停）    │
+│ ② GDB: print &var → 地址（需 MCU halted，自动回退）     │
+└──────────────────────────────────────────────────────┘
+                         ↓
+┌─ 实时采集 ──────────────────────────────────────────┐
+│ TCP → OpenOCD Telnet:4444 → mdw/mdh/mdb → 解析 → 绘图 │
+│ （绕过 GDB all-stop 限制，MCU 运行时持续采样）          │
+└──────────────────────────────────────────────────────┘
+```
+
 Live Watch 利用 ARM Cortex-M 调试架构中的 MEM-AP（Memory Access Port），
 通过 SWD 调试口作为独立总线主控读取 MCU 内存，与 CPU 并行工作，零侵入。
-
-```
-CLion Plugin → GDB monitor cmd → GDB Server → SWD → DAP (MEM-AP) → MCU Memory Bus
-```
 
 ## License
 

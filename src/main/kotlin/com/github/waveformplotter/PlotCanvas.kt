@@ -21,15 +21,22 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
     private var yScale = 1.0       // Y 轴缩放因子（>1 放大）
     private var xScale = 1.0       // X 轴缩放因子（>1 放大，显示更少点）
     private var xOffset = 0        // X 轴平移偏移（数据点数）
+    private var yOffset = 0.0      // Y 轴平移偏移（数据单位）
 
     // 鼠标拖拽状态
     private var dragStartX = 0
-    private var dragStartOffset = 0
+    private var dragStartY = 0
+    private var dragStartXOffset = 0
+    private var dragStartYOffset = 0.0
     private var isDragging = false
 
     // 鼠标悬停
     private var hoverX = -1
     private var hoverY = -1
+
+    // 当前可见 Y 范围（用于拖拽计算）
+    private var currentYMin = -1.0
+    private var currentYMax = 1.0
 
     private val refreshTimer: Timer
     private lateinit var mouseHandler: MouseAdapter
@@ -38,17 +45,36 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
     var onStatusUpdate: ((sampleCount: Int, yRange: String) -> Unit)? = null
 
     // 绘图常量
-    private val margin = Insets(10, 55, 25, 10)
+    private val margin = Insets(12, 62, 28, 12)
     private val gridColor = JBColor(Color(50, 50, 50, 60), Color(200, 200, 200, 40))
     private val textColor = JBColor(Color(100, 100, 100), Color(180, 180, 180))
     private val bgColor = JBColor(Color(0xF8F8F8), Color(0x2B2B2B))
     private val crosshairColor = JBColor(Color(150, 150, 150, 120), Color(150, 150, 150, 80))
+    private val tooltipBgColor = JBColor(Color(255, 255, 255, 220), Color(50, 50, 50, 220))
 
-    // 缓存 Font 避免每帧创建
-    private val fontGrid = Font("Monospaced", Font.PLAIN, 10)
-    private val fontAxisLabel = Font("Monospaced", Font.PLAIN, 9)
-    private val fontTooltip = Font("Monospaced", Font.PLAIN, 11)
-    private val fontHint = Font("SansSerif", Font.PLAIN, 13)
+    // 可配置参数（通过设置面板修改）
+    var lineWidth = 2.0f
+    var fontSize = 12
+
+    // 动态字体（根据 fontSize 更新）
+    private var fontGrid = Font("Monospaced", Font.PLAIN, fontSize)
+    private var fontAxisLabel = Font("Monospaced", Font.PLAIN, fontSize - 1)
+    private var fontTooltip = Font("Monospaced", Font.BOLD, fontSize + 1)
+    private var fontHint = Font("SansSerif", Font.PLAIN, fontSize + 2)
+
+    var refreshIntervalMs = 33
+
+    fun updateFonts() {
+        fontGrid = Font("Monospaced", Font.PLAIN, fontSize)
+        fontAxisLabel = Font("Monospaced", Font.PLAIN, fontSize - 1)
+        fontTooltip = Font("Monospaced", Font.BOLD, fontSize + 1)
+        fontHint = Font("SansSerif", Font.PLAIN, fontSize + 2)
+        repaint()
+    }
+
+    fun updateRefreshRate() {
+        refreshTimer.delay = refreshIntervalMs
+    }
 
     init {
         isOpaque = true
@@ -59,8 +85,10 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
                 if (e.button == MouseEvent.BUTTON1) {
                     isDragging = true
                     dragStartX = e.x
-                    dragStartOffset = xOffset
-                    cursor = Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    dragStartY = e.y
+                    dragStartXOffset = xOffset
+                    dragStartYOffset = yOffset
+                    cursor = Cursor.getPredefinedCursor(Cursor.MOVE_CURSOR)
                 }
             }
 
@@ -77,6 +105,7 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
                     xScale = 1.0
                     yScale = 1.0
                     xOffset = 0
+                    yOffset = 0.0
                     repaint()
                 }
             }
@@ -84,13 +113,24 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
             override fun mouseDragged(e: MouseEvent) {
                 if (isDragging) {
                     val plotW = width - margin.left - margin.right
-                    if (plotW <= 0) return
-                    val maxPoints = dataBuffer.getChannels().maxOfOrNull { it.size } ?: return
-                    val visiblePoints = (maxPoints / xScale).toInt().coerceAtLeast(2)
-                    val pixelsPerPoint = plotW.toDouble() / visiblePoints
-                    val dx = e.x - dragStartX
-                    xOffset = (dragStartOffset - (dx / pixelsPerPoint).toInt())
-                        .coerceIn(0, (maxPoints - visiblePoints).coerceAtLeast(0))
+                    val plotH = height - margin.top - margin.bottom
+                    if (plotW <= 0 || plotH <= 0) return
+
+                    // X 轴拖拽
+                    val maxPoints = dataBuffer.getChannels().maxOfOrNull { it.size } ?: 0
+                    if (maxPoints > 0) {
+                        val visiblePoints = (maxPoints / xScale).toInt().coerceAtLeast(2)
+                        val pixelsPerPoint = plotW.toDouble() / visiblePoints
+                        val dx = e.x - dragStartX
+                        xOffset = (dragStartXOffset - (dx / pixelsPerPoint).toInt())
+                            .coerceIn(0, (maxPoints - visiblePoints).coerceAtLeast(0))
+                    }
+
+                    // Y 轴拖拽（向上拖 = yOffset 增大 = 波形下移）
+                    val dy = e.y - dragStartY
+                    val yRange = currentYMax - currentYMin
+                    yOffset = dragStartYOffset + (dy.toDouble() / plotH) * yRange
+
                     repaint()
                 }
             }
@@ -98,13 +138,12 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
             override fun mouseMoved(e: MouseEvent) {
                 hoverX = e.x
                 hoverY = e.y
-                repaint()
+                // 由 refreshTimer 统一刷新，不单独触发 repaint
             }
 
             override fun mouseExited(e: MouseEvent) {
                 hoverX = -1
                 hoverY = -1
-                repaint()
             }
 
             override fun mouseWheelMoved(e: MouseWheelEvent) {
@@ -144,6 +183,7 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         xOffset = 0
         xScale = 1.0
         yScale = 1.0
+        yOffset = 0.0
     }
 
     override fun paintComponent(g: Graphics) {
@@ -191,11 +231,13 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         if (yMin == Double.MAX_VALUE) { yMin = -1.0; yMax = 1.0 }
         if (yMin == yMax) { yMin -= 1.0; yMax += 1.0 }
 
-        // 应用 Y 轴缩放
+        // 应用 Y 轴缩放 + 偏移
         val yCenter = (yMin + yMax) / 2.0
         val yRange = (yMax - yMin) / yScale
-        yMin = yCenter - yRange / 2.0
-        yMax = yCenter + yRange / 2.0
+        yMin = yCenter - yRange / 2.0 + yOffset
+        yMax = yCenter + yRange / 2.0 + yOffset
+        currentYMin = yMin
+        currentYMax = yMax
 
         // 绘制网格
         drawGrid(g2, plotW, plotH, yMin, yMax, startIdx, endIdx)
@@ -206,7 +248,7 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
             val chEnd = endIdx.coerceAtMost(ch.size)
             if (chEnd - startIdx < 2) continue
             g2.color = ch.color
-            g2.stroke = BasicStroke(1.5f)
+            g2.stroke = BasicStroke(lineWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
 
             var prevX = -1
             var prevY = -1
@@ -246,25 +288,47 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         channels: List<ChannelData>, startIdx: Int, visiblePoints: Int,
         yMin: Double, yMax: Double
     ) {
-        // 竖线
+        // 竖线 + 横线
         g2.color = crosshairColor
         g2.stroke = BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0f, floatArrayOf(4f, 4f), 0f)
         g2.drawLine(hoverX, margin.top, hoverX, margin.top + plotH)
+        g2.drawLine(margin.left, hoverY, margin.left + plotW, hoverY)
 
         // 计算对应的数据索引
         val relX = (hoverX - margin.left).toDouble() / plotW
         val dataIdx = startIdx + (relX * (visiblePoints - 1)).toInt()
 
-        // 显示各通道在此位置的数值
+        // 收集 tooltip 内容
         g2.font = fontTooltip
-        var tooltipY = margin.top + 14
+        val fm = g2.fontMetrics
+        val lineH = fm.height + 2
+        val tooltipLines = mutableListOf<Pair<Color, String>>()
         for (ch in channels) {
             if (dataIdx < 0 || dataIdx >= ch.size) continue
             val value = ch.get(dataIdx)
-            val text = "${ch.name}: ${formatValue(value)}"
-            g2.color = ch.color
-            g2.drawString(text, hoverX + 8, tooltipY)
-            tooltipY += 14
+            tooltipLines.add(ch.color to "${ch.name}: ${formatValue(value)}")
+        }
+        if (tooltipLines.isEmpty()) return
+
+        // 绘制 tooltip 背景框
+        val maxTextW = tooltipLines.maxOf { fm.stringWidth(it.second) }
+        val tooltipW = maxTextW + 16
+        val tooltipH = tooltipLines.size * lineH + 8
+        val tx = if (hoverX + tooltipW + 12 > margin.left + plotW) hoverX - tooltipW - 8 else hoverX + 10
+        val ty = (hoverY - tooltipH / 2).coerceIn(margin.top, margin.top + plotH - tooltipH)
+
+        g2.color = tooltipBgColor
+        g2.fillRoundRect(tx, ty, tooltipW, tooltipH, 6, 6)
+        g2.color = crosshairColor
+        g2.stroke = BasicStroke(1f)
+        g2.drawRoundRect(tx, ty, tooltipW, tooltipH, 6, 6)
+
+        // 绘制 tooltip 文字
+        var textY = ty + fm.ascent + 4
+        for ((color, text) in tooltipLines) {
+            g2.color = color
+            g2.drawString(text, tx + 8, textY)
+            textY += lineH
         }
     }
 

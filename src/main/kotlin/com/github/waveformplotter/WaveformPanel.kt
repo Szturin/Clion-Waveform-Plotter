@@ -10,6 +10,7 @@ import com.intellij.ui.JBColor
 import java.awt.*
 import java.io.File
 import javax.swing.*
+import javax.swing.event.ChangeListener
 
 /**
  * 主面板: 被动监听 + Live Watch 实时监控
@@ -29,10 +30,10 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     private val dataBuffer = DataBuffer()
     private val plotCanvas = PlotCanvas(dataBuffer)
     private val collector = WatchVariableCollector(dataBuffer) {
-        SwingUtilities.invokeLater { plotCanvas.repaint(); updateStatusBar() }
+        SwingUtilities.invokeLater { updateChannelValues(); updateStatusBar() }
     }
     private val liveWatchService = LiveWatchService(dataBuffer) {
-        SwingUtilities.invokeLater { plotCanvas.repaint(); updateStatusBar() }
+        SwingUtilities.invokeLater { updateChannelValues(); updateStatusBar() }
     }
     private val sessionListener = DebugSessionListener(project, collector) { active ->
         SwingUtilities.invokeLater { updateSessionState(active) }
@@ -57,6 +58,13 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     }
     private val portLabel = JLabel("Port:")
 
+    // 设置按钮
+    private val settingsBtn = JButton("\u2699").apply {
+        toolTipText = "Display Settings"
+        font = Font("SansSerif", Font.PLAIN, 16)
+        margin = Insets(2, 6, 2, 6)
+    }
+
     // 变量输入
     private val varField = JTextField(18)
     private val addBtn = JButton("+ Add")
@@ -71,6 +79,8 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
 
     // 勾选框列表
     private val channelCheckboxes = mutableMapOf<String, JCheckBox>()
+    // 变量实时值标签
+    private val channelValueLabels = mutableMapOf<String, JLabel>()
 
     private val log = Logger.getInstance(WaveformPanel::class.java)
     private var hasActiveSession = false
@@ -101,6 +111,11 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     }
 
     private fun setupLiveWatchCallbacks() {
+        // Debug 会话首次暂停：自动获取 ELF 路径并加载符号（静默/隐藏）
+        sessionListener.onSessionStarted = { session ->
+            autoLoadElfSymbols(session)
+        }
+
         // MCU 暂停时：如果 Live Watch 开启且有未解析的变量，自动解析
         sessionListener.onSessionPaused = { session ->
             if (liveWatchService.isRunning.get()) {
@@ -154,6 +169,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
 
         controlBar.add(Box.createHorizontalGlue())
         controlBar.add(sessionStatusLabel)
+        controlBar.add(Box.createHorizontalStrut(8))
+        settingsBtn.addActionListener { showSettingsDialog() }
+        controlBar.add(settingsBtn)
 
         // --- 变量输入栏 ---
         val inputBar = JPanel(FlowLayout(FlowLayout.LEFT, 4, 2))
@@ -180,9 +198,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         topPanel.add(checkScroll)
 
         // --- 状态栏 ---
-        statusLabel.font = Font("Monospaced", Font.PLAIN, 11)
+        statusLabel.font = Font("Monospaced", Font.PLAIN, 12)
         statusLabel.foreground = JBColor(Color(100, 100, 100), Color(160, 160, 160))
-        liveStatusLabel.font = Font("Monospaced", Font.PLAIN, 11)
+        liveStatusLabel.font = Font("Monospaced", Font.PLAIN, 12)
         val statusBar = JPanel(BorderLayout())
         statusBar.add(statusLabel, BorderLayout.WEST)
         statusBar.add(liveStatusLabel, BorderLayout.EAST)
@@ -222,6 +240,13 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
             font = Font("Monospaced", Font.BOLD, 12)
             toolTipText = "Right-click to remove"
         }
+
+        // 实时数值标签
+        val valueLabel = JLabel("").apply {
+            foreground = color
+            font = Font("Monospaced", Font.PLAIN, 11)
+        }
+
         cb.addActionListener {
             if (cb.isSelected) {
                 collector.trackedVariables.add(name)
@@ -231,20 +256,30 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
             saveConfig()
         }
         // 右键删除
-        cb.addMouseListener(object : java.awt.event.MouseAdapter() {
+        val rightClickListener = object : java.awt.event.MouseAdapter() {
             override fun mouseClicked(e: java.awt.event.MouseEvent) {
                 if (e.button == java.awt.event.MouseEvent.BUTTON3) {
                     removeVariable(name)
                 }
             }
-        })
+        }
+        cb.addMouseListener(rightClickListener)
+        valueLabel.addMouseListener(rightClickListener)
 
         if (checked) {
             collector.trackedVariables.add(name)
         }
 
         channelCheckboxes[name] = cb
-        channelCheckPanel.add(cb)
+        channelValueLabels[name] = valueLabel
+
+        // 组合: [checkbox] [value_label] | 下一个变量...
+        val itemPanel = JPanel(FlowLayout(FlowLayout.LEFT, 0, 0)).apply {
+            isOpaque = false
+            add(cb)
+            add(valueLabel)
+        }
+        channelCheckPanel.add(itemPanel)
         channelCheckPanel.revalidate()
         channelCheckPanel.repaint()
     }
@@ -252,11 +287,21 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     private fun removeVariable(name: String) {
         collector.trackedVariables.remove(name)
         dataBuffer.removeChannel(name)
-        channelCheckboxes.remove(name)?.let { cb ->
-            channelCheckPanel.remove(cb)
-            channelCheckPanel.revalidate()
-            channelCheckPanel.repaint()
+        channelCheckboxes.remove(name)
+        channelValueLabels.remove(name)
+        // 移除包含该变量的 itemPanel
+        val components = channelCheckPanel.components.toList()
+        for (comp in components) {
+            if (comp is JPanel) {
+                val hasTarget = comp.components.any { it is JCheckBox && (it as JCheckBox).text == name }
+                if (hasTarget) {
+                    channelCheckPanel.remove(comp)
+                    break
+                }
+            }
         }
+        channelCheckPanel.revalidate()
+        channelCheckPanel.repaint()
         saveConfig()
     }
 
@@ -287,42 +332,63 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         val freq = freqSpinner.value as Int
         val port = portSpinner.value as Int
 
-        // 先解析地址（需要 MCU 暂停），然后通过 Telnet 启动采集
         liveWatchBtn.text = "\u23F3 Resolving..."
         liveWatchBtn.isEnabled = false
         liveStatusLabel.text = "Resolving addresses...  "
         liveStatusLabel.foreground = colorIdle
 
-        liveWatchService.resolveVariables(session, trackedVars) { resolvedCount ->
-            SwingUtilities.invokeLater {
-                if (resolvedCount == 0) {
-                    liveWatchBtn.text = "\u25B6 Live"
-                    liveWatchBtn.isEnabled = true
-                    liveWatchBtn.foreground = colorError
-                    liveStatusLabel.text = "Failed to resolve variables (MCU must be paused first)  "
-                    liveStatusLabel.foreground = colorError
-                    return@invokeLater
+        // 1. 先尝试 ELF 符号表解析（无需暂停 MCU）
+        val elfResolved = if (liveWatchService.elfResolver.isLoaded()) {
+            val elfPath = liveWatchService.elfResolver.lastElfPath ?: ""
+            liveWatchService.resolveFromElf(elfPath, trackedVars)
+        } else 0
+
+        val unresolvedVars = trackedVars.filter { name ->
+            liveWatchService.getResolvedEntries()[name] == null
+        }
+
+        if (unresolvedVars.isEmpty()) {
+            // 全部通过 ELF 解析成功 — 无需暂停 MCU
+            log.info("All ${trackedVars.size} variables resolved via ELF (no pause needed)")
+            launchLiveWatch(port, freq)
+        } else {
+            // 有未解析变量 — 回退 GDB（需 MCU 暂停）
+            log.info("$elfResolved resolved via ELF, ${unresolvedVars.size} need GDB fallback")
+            liveWatchService.resolveVariables(session, unresolvedVars) { gdbResolved ->
+                SwingUtilities.invokeLater {
+                    val total = elfResolved + gdbResolved
+                    if (total == 0) {
+                        liveWatchBtn.text = "\u25B6 Live"
+                        liveWatchBtn.isEnabled = true
+                        liveWatchBtn.foreground = colorError
+                        liveStatusLabel.text = "Failed to resolve variables (MCU must be paused first)  "
+                        liveStatusLabel.foreground = colorError
+                        return@invokeLater
+                    }
+                    launchLiveWatch(port, freq)
                 }
-
-                liveWatchService.startLiveWatch(port, freq)
-
-                if (liveWatchService.lastError != null) {
-                    liveWatchBtn.text = "\u25B6 Live"
-                    liveWatchBtn.isEnabled = true
-                    liveWatchBtn.foreground = colorError
-                    liveStatusLabel.text = liveWatchService.lastError + "  "
-                    liveStatusLabel.foreground = colorError
-                    return@invokeLater
-                }
-
-                liveWatchBtn.text = "\u25A0 Live"
-                liveWatchBtn.isEnabled = true
-                liveWatchBtn.foreground = colorRunning
-                freqSpinner.isEnabled = false
-                portSpinner.isEnabled = false
-                updateLiveStatus()
             }
         }
+    }
+
+    private fun launchLiveWatch(port: Int, freq: Int) {
+        liveWatchService.startLiveWatch(port, freq)
+
+        if (liveWatchService.lastError != null) {
+            liveWatchBtn.text = "\u25B6 Live"
+            liveWatchBtn.isEnabled = true
+            liveWatchBtn.foreground = colorError
+            liveStatusLabel.text = liveWatchService.lastError + "  "
+            liveStatusLabel.foreground = colorError
+            return
+        }
+
+        liveWatchBtn.text = "\u25A0 Live"
+        liveWatchBtn.isEnabled = true
+        liveWatchBtn.foreground = colorRunning
+        freqSpinner.isEnabled = false
+        portSpinner.isEnabled = false
+        updateLiveStatus()
     }
 
     private fun stopLiveWatch() {
@@ -428,6 +494,32 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         updateButtonStates()
     }
 
+    /**
+     * 更新变量值标签 — 显示数据类型和最新数值
+     */
+    private fun updateChannelValues() {
+        val entries = liveWatchService.getResolvedEntries()
+        for ((name, label) in channelValueLabels) {
+            val ch = dataBuffer.getChannels().find { it.name == name }
+            if (ch != null && ch.size > 0) {
+                val lastValue = ch.get(ch.size - 1)
+                val typeStr = entries[name]?.dataType?.name?.lowercase() ?: "?"
+                label.text = " ($typeStr) ${formatCompactValue(lastValue)}"
+            }
+        }
+    }
+
+    private fun formatCompactValue(v: Double): String {
+        if (v.isNaN()) return "NaN"
+        return when {
+            v == 0.0 -> "0"
+            Math.abs(v) >= 10000 -> String.format("%.0f", v)
+            Math.abs(v) >= 1 -> String.format("%.3f", v)
+            Math.abs(v) >= 0.001 -> String.format("%.5f", v)
+            else -> String.format("%.2e", v)
+        }
+    }
+
     private fun updateStatusBar() {
         // 状态栏在 plotCanvas.onStatusUpdate 中更新
     }
@@ -439,6 +531,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         s.trackedVariables = collector.trackedVariables.toMutableList()
         s.liveWatchFrequency = freqSpinner.value as Int
         s.telnetPort = portSpinner.value as Int
+        s.fontSize = plotCanvas.fontSize
+        s.lineWidth = plotCanvas.lineWidth
+        s.refreshFps = if (plotCanvas.refreshIntervalMs <= 17) 60 else 30
     }
 
     private fun restoreConfig() {
@@ -450,10 +545,98 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         }
         freqSpinner.value = s.liveWatchFrequency.coerceIn(1, 100)
         portSpinner.value = s.telnetPort.coerceIn(1, 65535)
+        // 恢复 UI 设置
+        plotCanvas.fontSize = s.fontSize.coerceIn(8, 20)
+        plotCanvas.lineWidth = s.lineWidth.coerceIn(0.5f, 5.0f)
+        plotCanvas.refreshIntervalMs = if (s.refreshFps >= 60) 16 else 33
+        plotCanvas.updateFonts()
+        plotCanvas.updateRefreshRate()
     }
 
     private fun csvField(s: String): String {
         return if (s.contains(',') || s.contains('"')) "\"${s.replace("\"", "\"\"")}\"" else s
+    }
+
+    /**
+     * 静默获取 ELF 路径并加载符号表（用户不可见）
+     * 通过 GDB `info files` 命令获取当前加载的可执行文件路径
+     */
+    private fun autoLoadElfSymbols(session: com.intellij.xdebugger.XDebugSession) {
+        val cidrProcess = session.debugProcess as? com.jetbrains.cidr.execution.debugger.CidrDebugProcess ?: return
+        cidrProcess.postCommand(object : com.jetbrains.cidr.execution.debugger.CidrDebugProcess.VoidDebuggerCommand {
+            override fun run(driver: com.jetbrains.cidr.execution.debugger.backend.DebuggerDriver) {
+                try {
+                    val result = driver.executeInterpreterCommand("info files").trim()
+                    // 解析 "Symbols from ..." 或 "Local exec file:" 行
+                    val elfPath = parseElfPathFromInfoFiles(result)
+                    if (elfPath != null) {
+                        val count = liveWatchService.elfResolver.loadSymbols(elfPath)
+                        if (count) {
+                            log.info("Auto-loaded ${liveWatchService.elfResolver.getSymbolCount()} ELF symbols from $elfPath")
+                        }
+                    }
+                } catch (e: Exception) {
+                    log.debug("Auto ELF load failed: ${e.message}")
+                }
+            }
+        })
+    }
+
+    private fun parseElfPathFromInfoFiles(output: String): String? {
+        // 格式: 'Symbols from "/path/to/firmware.elf".'
+        val symbolsMatch = Regex("""Symbols from "(.+?)\"""").find(output)
+        if (symbolsMatch != null) return symbolsMatch.groupValues[1]
+
+        // 格式: 'Local exec file:\n    `/path/to/firmware.elf\''
+        val localMatch = Regex("""`(.+?\.elf)'""").find(output)
+        if (localMatch != null) return localMatch.groupValues[1]
+
+        return null
+    }
+
+    private fun showSettingsDialog() {
+        val panel = JPanel(GridBagLayout())
+        val gbc = GridBagConstraints().apply {
+            insets = Insets(4, 8, 4, 8)
+            anchor = GridBagConstraints.WEST
+        }
+
+        // 字体大小
+        val fontSizeSpinner = JSpinner(SpinnerNumberModel(plotCanvas.fontSize, 8, 20, 1))
+        gbc.gridx = 0; gbc.gridy = 0
+        panel.add(JLabel("Font Size:"), gbc)
+        gbc.gridx = 1
+        panel.add(fontSizeSpinner, gbc)
+
+        // 波形线宽
+        val lineWidthSpinner = JSpinner(SpinnerNumberModel(plotCanvas.lineWidth.toDouble(), 0.5, 5.0, 0.5))
+        gbc.gridx = 0; gbc.gridy = 1
+        panel.add(JLabel("Line Width:"), gbc)
+        gbc.gridx = 1
+        panel.add(lineWidthSpinner, gbc)
+
+        // 刷新率
+        val refreshRates = arrayOf("30 fps", "60 fps")
+        val refreshCombo = JComboBox(refreshRates).apply {
+            selectedIndex = if (plotCanvas.refreshIntervalMs <= 17) 1 else 0
+        }
+        gbc.gridx = 0; gbc.gridy = 2
+        panel.add(JLabel("Refresh Rate:"), gbc)
+        gbc.gridx = 1
+        panel.add(refreshCombo, gbc)
+
+        val result = JOptionPane.showConfirmDialog(
+            this, panel, "Display Settings",
+            JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE
+        )
+        if (result == JOptionPane.OK_OPTION) {
+            plotCanvas.fontSize = fontSizeSpinner.value as Int
+            plotCanvas.lineWidth = (lineWidthSpinner.value as Double).toFloat()
+            plotCanvas.refreshIntervalMs = if (refreshCombo.selectedIndex == 1) 16 else 33
+            plotCanvas.updateFonts()
+            plotCanvas.updateRefreshRate()
+            saveConfig()
+        }
     }
 
     override fun dispose() {
