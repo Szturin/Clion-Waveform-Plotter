@@ -3,11 +3,36 @@
     <name>Waveform Plotter</name>
     <vendor>waveform-plotter</vendor>
     <description><![CDATA[
-        Real-time waveform plotter for embedded debugging.
-        Passively listens to debug session pause events (breakpoints, step, manual pause).
-        Auto-lists Watch panel variables with checkboxes for selective plotting.
-        Zero MCU intrusion — plot waveforms alongside normal debugging.
+        Real-time waveform plotter for embedded debugging in CLion.
+
+        <b>Key Features:</b>
+        <ul>
+            <li><b>Passive Mode</b> — Automatically captures Watch variables on breakpoint/step pause events</li>
+            <li><b>Live Watch</b> — Non-invasive real-time memory monitoring via OpenOCD Telnet (CPU keeps running)</li>
+            <li><b>FFT Spectrum Analysis</b> — One-click time/frequency domain switching with Hanning window and dB magnitude spectrum</li>
+            <li><b>ELF Symbol Resolution</b> — Zero-pause variable address resolution from ELF symbol table</li>
+            <li><b>Multi-channel</b> — Up to 8 channels with pan, zoom, crosshair tooltip, and CSV export</li>
+        </ul>
+
+        Designed for OpenOCD / DAP-Link / ST-Link users.
+        CLion's native Live Watches only supports J-Link/ST-Link — this plugin fills the gap for CMSIS-DAP debuggers.
     ]]></description>
+
+    <change-notes><![CDATA[
+        <b>v1.2.0</b>
+        <ul>
+            <li><b>FFT Spectrum Analysis</b> — Time/FFT one-click toggle, Cooley-Tukey radix-2 FFT with Hanning window, dB magnitude spectrum display</li>
+            <li><b>Performance</b> — FFT result caching (recompute only on data change), Hanning window precomputation, work array reuse, BasicStroke caching</li>
+            <li><b>DataBuffer versioning</b> — Atomic version counter for efficient cache invalidation</li>
+        </ul>
+
+        <b>v1.1.0</b>
+        <ul>
+            <li>Live Watch via OpenOCD Telnet with ELF symbol resolution</li>
+            <li>Editor right-click "Add to Waveform Plotter" action</li>
+            <li>Telnet pipelining + TCP_NODELAY for precision sampling</li>
+        </ul>
+    ]]></change-notes>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.modules.xdebugger</depends>

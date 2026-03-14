@@ -43,6 +43,11 @@ class DataBuffer {
     private val channels = mutableListOf<ChannelData>()
     private val lock = Any()
 
+    /** 数据版本号，每次 pushAll/clearAll 递增，用于 FFT 缓存失效检测 */
+    @Volatile
+    var version = 0L
+        private set
+
     val channelCount: Int get() = synchronized(lock) { channels.size }
 
     fun addChannel(name: String): ChannelData? {
@@ -68,11 +73,15 @@ class DataBuffer {
                 val v = values[ch.name]
                 if (v != null) ch.push(v)
             }
+            version++
         }
     }
 
     fun clearAll() {
-        synchronized(lock) { channels.forEach { it.clear() } }
+        synchronized(lock) {
+            channels.forEach { it.clear() }
+            version++
+        }
     }
 
     companion object {

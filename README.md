@@ -1,6 +1,6 @@
-# Waveform Plotter v1.1 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.2 — CLion Embedded Debug Plugin
 
-CLion 插件，为嵌入式调试提供实时波形绘制功能。专为 OpenOCD / DAP-Link 用户设计。
+CLion 插件，为嵌入式调试提供实时波形绘制 + FFT 频谱分析功能。专为 OpenOCD / DAP-Link 用户设计。
 
 ## 功能
 
@@ -13,10 +13,19 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。专为 OpenOCD
 
 - **非侵入式**：通过 SWD MEM-AP 直读 MCU 内存，CPU 不停
 - **零暂停启动**：自动从 ELF 符号表解析变量地址，无需暂停 MCU
-- 支持 1-100Hz 采样频率（默认 50Hz）
+- 支持 1-500Hz 采样频率（默认 50Hz）
 - 通过 OpenOCD Telnet 端口直连（绕过 GDB all-stop 限制）
 - 变量实时显示数据类型和当前数值
 - 支持数据类型：int8/16/32, uint8/16/32, float, double
+
+### FFT 频谱分析（v1.2 新增）
+
+- **一键切换**：Time / FFT 按钮切换时域/频域显示
+- **Cooley-Tukey FFT**：取最后 1024 点，自动补零到 2 的幂
+- **Hanning 窗**：抑制频谱泄漏
+- **dB 幅度谱**：Y 轴显示 dB，X 轴显示频率 (Hz)
+- **性能优化**：FFT 结果缓存（仅数据变化时重算）、窗函数预计算、工作数组复用
+- 复用通道颜色、缩放/拖拽/tooltip 交互
 
 ### 波形显示
 
@@ -46,7 +55,7 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。专为 OpenOCD
 ### 安装
 1. `./gradlew buildPlugin`
 2. CLion → Settings → Plugins → 齿轮图标 → Install Plugin from Disk
-3. 选择 `build/distributions/clion-waveform-plotter-1.1.0.zip`
+3. 选择 `build/distributions/clion-waveform-plotter-1.2.0.zip`
 4. 重启 CLion
 
 ### 被动模式
@@ -66,6 +75,13 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。专为 OpenOCD
 
 > Live Watch 只能监控有固定地址的变量（全局变量、静态变量）。
 > 建议监控变量加 `volatile` 关键字，避免 D-Cache 导致读到旧值。
+
+### FFT 频谱分析
+1. 采集波形数据（被动模式或 Live Watch）
+2. 点控制栏 **FFT** 按钮切换到频域视图
+3. X 轴显示频率 (Hz)，Y 轴显示幅度 (dB)
+4. 点 **Time** 按钮切回时域，波形不受影响
+5. 频率分辨率 = 采样率 / FFT 点数（如 50Hz/1024 ≈ 0.049Hz）
 
 ### 交互操作
 - **左键拖拽**：万向平移（上下左右任意方向）
@@ -89,12 +105,14 @@ CLion 插件，为嵌入式调试提供实时波形绘制功能。专为 OpenOCD
 src/main/kotlin/com/github/waveformplotter/
 ├── WaveformToolWindowFactory.kt  # 工具窗口入口
 ├── WaveformPanel.kt              # 主面板 UI
-├── PlotCanvas.kt                 # 波形绘制引擎
+├── PlotCanvas.kt                 # 波形绘制引擎（时域 + FFT 频域）
+├── FFT.kt                        # Cooley-Tukey FFT 算法（窗函数缓存 + 数组复用）
 ├── LiveWatchService.kt           # Live Watch 实时采集服务（Telnet）
 ├── ElfSymbolResolver.kt          # ELF 符号表解析（零暂停地址解析）
+├── AddToPlotterAction.kt         # 编辑器右键菜单 Action
 ├── WatchVariableCollector.kt     # 被动模式变量采集
 ├── DebugSessionListener.kt       # 调试会话生命周期管理
-├── DataBuffer.kt                 # 环形缓冲区
+├── DataBuffer.kt                 # 环形缓冲区（含版本号用于缓存失效）
 └── WaveformConfigService.kt      # 配置持久化
 ```
 
@@ -112,6 +130,13 @@ src/main/kotlin/com/github/waveformplotter/
 │ （绕过 GDB all-stop 限制，MCU 运行时持续采样）          │
 └──────────────────────────────────────────────────────┘
 ```
+
+### FFT 频谱分析
+```
+时域数据（最后 1024 点）→ Hanning 窗 → 补零到 2^N → Cooley-Tukey FFT → 单边幅度谱 (dB)
+```
+- 结果缓存：仅 DataBuffer 版本号变化时重算，30/60fps 刷新零重复计算
+- 工作数组复用：FFT 内部 re/im 数组和窗函数系数跨帧复用，减少 GC 压力
 
 Live Watch 利用 ARM Cortex-M 调试架构中的 MEM-AP（Memory Access Port），
 通过 SWD 调试口作为独立总线主控读取 MCU 内存，与 CPU 并行工作，零侵入。

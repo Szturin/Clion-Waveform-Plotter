@@ -58,6 +58,16 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     }
     private val portLabel = JLabel("Port:")
 
+    // 时域/频域切换按钮
+    private val timeModeBtn = JButton("Time").apply {
+        toolTipText = "Time domain waveform"
+        margin = Insets(2, 8, 2, 8)
+    }
+    private val fftModeBtn = JButton("FFT").apply {
+        toolTipText = "FFT frequency spectrum"
+        margin = Insets(2, 8, 2, 8)
+    }
+
     // 设置按钮
     private val settingsBtn = JButton("\u2699").apply {
         toolTipText = "Display Settings"
@@ -149,6 +159,18 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         controlBar.add(clearBtn)
         controlBar.add(Box.createHorizontalStrut(8))
         controlBar.add(exportBtn)
+
+        // --- 时域/频域切换 ---
+        controlBar.add(Box.createHorizontalStrut(8))
+        controlBar.add(JSeparator(SwingConstants.VERTICAL).apply {
+            preferredSize = Dimension(2, 20)
+        })
+        controlBar.add(Box.createHorizontalStrut(8))
+        timeModeBtn.addActionListener { setDisplayMode(DisplayMode.TIME) }
+        fftModeBtn.addActionListener { setDisplayMode(DisplayMode.FFT) }
+        controlBar.add(timeModeBtn)
+        controlBar.add(fftModeBtn)
+        updateModeButtons()
 
         // --- Live Watch 控件 ---
         controlBar.add(Box.createHorizontalStrut(16))
@@ -311,6 +333,23 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         channelCheckPanel.revalidate()
         channelCheckPanel.repaint()
         saveConfig()
+    }
+
+    private fun setDisplayMode(mode: DisplayMode) {
+        plotCanvas.displayMode = mode
+        plotCanvas.sampleRateHz = (freqSpinner.value as Int).toDouble()
+        plotCanvas.resetView()
+        plotCanvas.repaint()
+        updateModeButtons()
+    }
+
+    private fun updateModeButtons() {
+        val isTime = plotCanvas.displayMode == DisplayMode.TIME
+        timeModeBtn.isEnabled = !isTime
+        fftModeBtn.isEnabled = isTime
+        // 高亮当前模式
+        timeModeBtn.font = Font("SansSerif", if (isTime) Font.BOLD else Font.PLAIN, 12)
+        fftModeBtn.font = Font("SansSerif", if (!isTime) Font.BOLD else Font.PLAIN, 12)
     }
 
     private fun toggleLiveWatch() {

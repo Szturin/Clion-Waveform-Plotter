@@ -8,6 +8,8 @@ import java.awt.event.MouseWheelEvent
 import javax.swing.JPanel
 import javax.swing.Timer
 
+enum class DisplayMode { TIME, FFT }
+
 /**
  * 波形绘制画布
  * - 背景网格 + Y 轴自动缩放
@@ -15,6 +17,7 @@ import javax.swing.Timer
  * - 鼠标滚轮缩放 X/Y 轴（Shift+滚轮切换轴）
  * - 鼠标左键拖拽平移查看历史
  * - 鼠标悬停显示数值 tooltip
+ * - FFT 频域显示模式（结果缓存，仅数据变化时重算）
  */
 class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
 
@@ -52,6 +55,16 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
     private val crosshairColor = JBColor(Color(150, 150, 150, 120), Color(150, 150, 150, 80))
     private val tooltipBgColor = JBColor(Color(255, 255, 255, 220), Color(50, 50, 50, 220))
 
+    // 预缓存 Stroke 对象（避免每帧分配）
+    private val dashedStroke = BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0f, floatArrayOf(4f, 4f), 0f)
+    private val thinStroke = BasicStroke(1f)
+    private var cachedLineStroke: BasicStroke? = null
+    private var cachedLineWidth = -1f
+
+    // 显示模式
+    var displayMode = DisplayMode.TIME
+    var sampleRateHz = 50.0  // Live Watch 采样率，用于 FFT 频率轴
+
     // 可配置参数（通过设置面板修改）
     var lineWidth = 2.0f
     var fontSize = 12
@@ -64,6 +77,19 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
 
     var refreshIntervalMs = 33
 
+    // --- FFT 结果缓存 ---
+    private class CachedSpectrum(
+        val name: String,
+        val color: Color,
+        val magnitudes: DoubleArray,
+        val fftN: Int
+    )
+    private var fftCache = emptyList<CachedSpectrum>()
+    private var fftCacheDataVersion = -1L   // 数据版本号，检测变化
+    private var fftCacheInputSize = 0
+    // 采样缓冲复用
+    private var fftSampleBuf = DoubleArray(1024)
+
     fun updateFonts() {
         fontGrid = Font("Monospaced", Font.PLAIN, fontSize)
         fontAxisLabel = Font("Monospaced", Font.PLAIN, fontSize - 1)
@@ -74,6 +100,14 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
 
     fun updateRefreshRate() {
         refreshTimer.delay = refreshIntervalMs
+    }
+
+    private fun getLineStroke(): BasicStroke {
+        if (cachedLineWidth != lineWidth) {
+            cachedLineWidth = lineWidth
+            cachedLineStroke = BasicStroke(lineWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        }
+        return cachedLineStroke!!
     }
 
     init {
@@ -184,6 +218,7 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         xScale = 1.0
         yScale = 1.0
         yOffset = 0.0
+        fftCacheDataVersion = -1L  // 强制 FFT 重算
     }
 
     override fun paintComponent(g: Graphics) {
@@ -206,13 +241,22 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
             return
         }
 
-        // 计算可见数据范围
         val maxPoints = channels.maxOf { it.size }
         if (maxPoints < 1) {
             drawEmptyHint(g2)
             return
         }
 
+        when (displayMode) {
+            DisplayMode.TIME -> paintTimeDomain(g2, plotW, plotH, channels, maxPoints)
+            DisplayMode.FFT -> paintFFT(g2, plotW, plotH, channels, maxPoints)
+        }
+    }
+
+    private fun paintTimeDomain(
+        g2: Graphics2D, plotW: Int, plotH: Int,
+        channels: List<ChannelData>, maxPoints: Int
+    ) {
         val visiblePoints = (maxPoints / xScale).toInt().coerceIn(2, maxPoints)
         val startIdx = xOffset.coerceIn(0, (maxPoints - visiblePoints).coerceAtLeast(0))
         val endIdx = (startIdx + visiblePoints).coerceAtMost(maxPoints)
@@ -244,18 +288,18 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
 
         // 绘制波形
         g2.clip = Rectangle(margin.left, margin.top, plotW, plotH)
+        val stroke = getLineStroke()
         for (ch in channels) {
             val chEnd = endIdx.coerceAtMost(ch.size)
             if (chEnd - startIdx < 2) continue
             g2.color = ch.color
-            g2.stroke = BasicStroke(lineWidth, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            g2.stroke = stroke
 
             var prevX = -1
             var prevY = -1
             for (i in startIdx until chEnd) {
                 val v = ch.get(i)
                 if (v.isNaN()) {
-                    // NaN 断线：下一个有效点重新起笔
                     prevX = -1
                     continue
                 }
@@ -275,22 +319,202 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         if (hoverX in margin.left..(margin.left + plotW) &&
             hoverY in margin.top..(margin.top + plotH)
         ) {
-            drawCrosshair(g2, plotW, plotH, channels, startIdx, visiblePoints, yMin, yMax)
+            drawCrosshair(g2, plotW, plotH, channels, startIdx, visiblePoints)
         }
 
         // 状态栏更新
         onStatusUpdate?.invoke(maxPoints, "[${formatValue(yMin)}, ${formatValue(yMax)}]")
+    }
 
+    /**
+     * 计算 FFT 频谱（带缓存：仅数据版本变化时重算）
+     */
+    private fun computeFFTSpectra(channels: List<ChannelData>, maxPoints: Int): List<CachedSpectrum> {
+        val currentVersion = dataBuffer.version
+        if (fftCacheDataVersion == currentVersion && fftCache.isNotEmpty()) {
+            return fftCache
+        }
+
+        val fftInputSize = 1024.coerceAtMost(maxPoints)
+
+        // 确保采样缓冲足够大
+        if (fftSampleBuf.size < fftInputSize) {
+            fftSampleBuf = DoubleArray(fftInputSize)
+        }
+
+        val results = ArrayList<CachedSpectrum>(channels.size)
+        for (ch in channels) {
+            if (ch.size < 2) continue
+            val n = fftInputSize.coerceAtMost(ch.size)
+            val offset = ch.size - n
+            for (i in 0 until n) {
+                val v = ch.get(offset + i)
+                fftSampleBuf[i] = if (v.isNaN()) 0.0 else v
+            }
+            // 使用复用版本
+            val inputSlice = if (n == fftSampleBuf.size) fftSampleBuf else fftSampleBuf.copyOf(n)
+            val mag = FFT.magnitudeSpectrum(inputSlice)
+            results.add(CachedSpectrum(ch.name, ch.color, mag, FFT.fftSize(n)))
+        }
+
+        fftCache = results
+        fftCacheDataVersion = currentVersion
+        fftCacheInputSize = fftInputSize
+        return results
+    }
+
+    private fun paintFFT(
+        g2: Graphics2D, plotW: Int, plotH: Int,
+        channels: List<ChannelData>, maxPoints: Int
+    ) {
+        val spectra = computeFFTSpectra(channels, maxPoints)
+        if (spectra.isEmpty()) {
+            drawEmptyHint(g2)
+            return
+        }
+
+        val halfN = spectra[0].magnitudes.size
+        val freqResolution = sampleRateHz / spectra[0].fftN  // Hz per bin
+
+        // 可见频率范围（应用 X 缩放/偏移）
+        val visibleBins = (halfN / xScale).toInt().coerceIn(2, halfN)
+        val startBin = xOffset.coerceIn(0, (halfN - visibleBins).coerceAtLeast(0))
+        val endBin = (startBin + visibleBins).coerceAtMost(halfN)
+
+        // Y 轴范围 (dB)
+        var yMin = Double.MAX_VALUE
+        var yMax = -Double.MAX_VALUE
+        for (sp in spectra) {
+            for (i in startBin until endBin.coerceAtMost(sp.magnitudes.size)) {
+                val v = sp.magnitudes[i]
+                if (v < -200) continue
+                if (v < yMin) yMin = v
+                if (v > yMax) yMax = v
+            }
+        }
+        if (yMin == Double.MAX_VALUE) { yMin = -120.0; yMax = 0.0 }
+        if (yMin == yMax) { yMin -= 10.0; yMax += 10.0 }
+
+        // 应用 Y 轴缩放 + 偏移
+        val yCenter = (yMin + yMax) / 2.0
+        val yRange = (yMax - yMin) / yScale
+        yMin = yCenter - yRange / 2.0 + yOffset
+        yMax = yCenter + yRange / 2.0 + yOffset
+        currentYMin = yMin
+        currentYMax = yMax
+
+        // 绘制 FFT 网格
+        drawFFTGrid(g2, plotW, plotH, yMin, yMax, startBin, endBin, freqResolution)
+
+        // 绘制频谱曲线
+        g2.clip = Rectangle(margin.left, margin.top, plotW, plotH)
+        val stroke = getLineStroke()
+        for (sp in spectra) {
+            val spEnd = endBin.coerceAtMost(sp.magnitudes.size)
+            if (spEnd - startBin < 2) continue
+            g2.color = sp.color
+            g2.stroke = stroke
+
+            var prevX = -1
+            var prevY = -1
+            for (i in startBin until spEnd) {
+                val v = sp.magnitudes[i]
+                val x = margin.left + ((i - startBin).toDouble() / (visibleBins - 1) * plotW).toInt()
+                val yNorm = (v - yMin) / (yMax - yMin)
+                val y = margin.top + plotH - (yNorm * plotH).toInt()
+                if (prevX >= 0) {
+                    g2.drawLine(prevX, prevY, x, y)
+                }
+                prevX = x
+                prevY = y
+            }
+        }
+        g2.clip = null
+
+        // 悬停十字线 + 频率/幅度 tooltip
+        if (hoverX in margin.left..(margin.left + plotW) &&
+            hoverY in margin.top..(margin.top + plotH)
+        ) {
+            drawFFTCrosshair(g2, plotW, plotH, spectra, startBin, visibleBins, freqResolution)
+        }
+
+        // 状态栏
+        onStatusUpdate?.invoke(fftCacheInputSize, "FFT ${spectra[0].fftN}pt | [${formatValue(yMin)}, ${formatValue(yMax)}] dB")
+    }
+
+    private fun drawFFTGrid(
+        g2: Graphics2D, plotW: Int, plotH: Int,
+        yMin: Double, yMax: Double, startBin: Int, endBin: Int,
+        freqResolution: Double
+    ) {
+        g2.color = gridColor
+        g2.stroke = thinStroke
+
+        // 水平网格线（Y 轴 = dB）
+        val hLines = 5
+        for (i in 0..hLines) {
+            val y = margin.top + (plotH.toDouble() * i / hLines).toInt()
+            g2.drawLine(margin.left, y, margin.left + plotW, y)
+
+            val value = yMax - (yMax - yMin) * i / hLines
+            g2.color = textColor
+            g2.font = fontGrid
+            g2.drawString("${formatValue(value)}dB", 2, y + 4)
+            g2.color = gridColor
+        }
+
+        // 垂直网格线（X 轴 = 频率 Hz）
+        val vLines = 5
+        g2.font = fontAxisLabel
+        for (i in 0..vLines) {
+            val x = margin.left + (plotW.toDouble() * i / vLines).toInt()
+            g2.drawLine(x, margin.top, x, margin.top + plotH)
+
+            val bin = startBin + ((endBin - startBin).toDouble() * i / vLines).toInt()
+            val freq = bin * freqResolution
+            g2.color = textColor
+            g2.drawString(formatFreq(freq), x + 2, margin.top + plotH + 12)
+            g2.color = gridColor
+        }
+
+        g2.drawRect(margin.left, margin.top, plotW, plotH)
+    }
+
+    private fun drawFFTCrosshair(
+        g2: Graphics2D, plotW: Int, plotH: Int,
+        spectra: List<CachedSpectrum>, startBin: Int, visibleBins: Int,
+        freqResolution: Double
+    ) {
+        g2.color = crosshairColor
+        g2.stroke = dashedStroke
+        g2.drawLine(hoverX, margin.top, hoverX, margin.top + plotH)
+        g2.drawLine(margin.left, hoverY, margin.left + plotW, hoverY)
+
+        val relX = (hoverX - margin.left).toDouble() / plotW
+        val bin = startBin + (relX * (visibleBins - 1)).toInt()
+        val freq = bin * freqResolution
+
+        g2.font = fontTooltip
+        val fm = g2.fontMetrics
+        val lineH = fm.height + 2
+
+        val tooltipLines = mutableListOf<Pair<Color, String>>()
+        for (sp in spectra) {
+            if (bin < 0 || bin >= sp.magnitudes.size) continue
+            val mag = sp.magnitudes[bin]
+            tooltipLines.add(sp.color to "${sp.name}: ${formatValue(freq)}Hz, ${formatValue(mag)}dB")
+        }
+        if (tooltipLines.isEmpty()) return
+
+        drawTooltipBox(g2, fm, lineH, tooltipLines, plotW, plotH)
     }
 
     private fun drawCrosshair(
         g2: Graphics2D, plotW: Int, plotH: Int,
-        channels: List<ChannelData>, startIdx: Int, visiblePoints: Int,
-        yMin: Double, yMax: Double
+        channels: List<ChannelData>, startIdx: Int, visiblePoints: Int
     ) {
-        // 竖线 + 横线
         g2.color = crosshairColor
-        g2.stroke = BasicStroke(1f, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL, 0f, floatArrayOf(4f, 4f), 0f)
+        g2.stroke = dashedStroke
         g2.drawLine(hoverX, margin.top, hoverX, margin.top + plotH)
         g2.drawLine(margin.left, hoverY, margin.left + plotW, hoverY)
 
@@ -310,22 +534,28 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         }
         if (tooltipLines.isEmpty()) return
 
-        // 绘制 tooltip 背景框
-        val maxTextW = tooltipLines.maxOf { fm.stringWidth(it.second) }
+        drawTooltipBox(g2, fm, lineH, tooltipLines, plotW, plotH)
+    }
+
+    /** 绘制 tooltip 背景框 + 文字（时域/频域共用） */
+    private fun drawTooltipBox(
+        g2: Graphics2D, fm: FontMetrics, lineH: Int,
+        lines: List<Pair<Color, String>>, plotW: Int, plotH: Int
+    ) {
+        val maxTextW = lines.maxOf { fm.stringWidth(it.second) }
         val tooltipW = maxTextW + 16
-        val tooltipH = tooltipLines.size * lineH + 8
+        val tooltipH = lines.size * lineH + 8
         val tx = if (hoverX + tooltipW + 12 > margin.left + plotW) hoverX - tooltipW - 8 else hoverX + 10
         val ty = (hoverY - tooltipH / 2).coerceIn(margin.top, margin.top + plotH - tooltipH)
 
         g2.color = tooltipBgColor
         g2.fillRoundRect(tx, ty, tooltipW, tooltipH, 6, 6)
         g2.color = crosshairColor
-        g2.stroke = BasicStroke(1f)
+        g2.stroke = thinStroke
         g2.drawRoundRect(tx, ty, tooltipW, tooltipH, 6, 6)
 
-        // 绘制 tooltip 文字
         var textY = ty + fm.ascent + 4
-        for ((color, text) in tooltipLines) {
+        for ((color, text) in lines) {
             g2.color = color
             g2.drawString(text, tx + 8, textY)
             textY += lineH
@@ -337,7 +567,7 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
         yMin: Double, yMax: Double, startIdx: Int, endIdx: Int
     ) {
         g2.color = gridColor
-        g2.stroke = BasicStroke(1f)
+        g2.stroke = thinStroke
 
         // 水平网格线（5条）
         val hLines = 5
@@ -355,6 +585,7 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
 
         // 垂直网格线（5条）
         val vLines = 5
+        g2.font = fontAxisLabel
         for (i in 0..vLines) {
             val x = margin.left + (plotW.toDouble() * i / vLines).toInt()
             g2.drawLine(x, margin.top, x, margin.top + plotH)
@@ -362,7 +593,6 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
             // X 轴标签（数据点序号）
             val idx = startIdx + ((endIdx - startIdx).toDouble() * i / vLines).toInt()
             g2.color = textColor
-            g2.font = fontAxisLabel
             g2.drawString("#$idx", x + 2, margin.top + plotH + 12)
             g2.color = gridColor
         }
@@ -386,6 +616,14 @@ class PlotCanvas(private val dataBuffer: DataBuffer) : JPanel() {
             Math.abs(v) >= 1 -> String.format("%.2f", v)
             Math.abs(v) >= 0.01 -> String.format("%.4f", v)
             else -> String.format("%.2e", v)
+        }
+    }
+
+    private fun formatFreq(hz: Double): String {
+        return when {
+            hz >= 1000 -> String.format("%.1fkHz", hz / 1000)
+            hz >= 1 -> String.format("%.1fHz", hz)
+            else -> String.format("%.2fHz", hz)
         }
     }
 }
