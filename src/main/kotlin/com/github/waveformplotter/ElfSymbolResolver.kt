@@ -66,7 +66,8 @@ class ElfSymbolResolver {
         }
 
         return try {
-            val process = ProcessBuilder(nmPath, "-g", "--print-size", "--size-sort", elfPath)
+            // 不用 -g（排除 static 变量）和 --size-sort（丢弃无 size 的符号）
+            val process = ProcessBuilder(nmPath, "--print-size", elfPath)
                 .redirectErrorStream(true)
                 .start()
 
@@ -136,12 +137,13 @@ class ElfSymbolResolver {
     // ─── nm 输出解析 ───
 
     /**
-     * 解析 arm-none-eabi-nm -g --print-size --size-sort 的输出
+     * 解析 arm-none-eabi-nm --print-size 的输出
      *
-     * 格式: "20000100 00000004 B my_variable"
-     *        address  size     type name
+     * 带 size: "20000100 00000004 B my_variable"
+     *           address  size     type name
      *
-     * 也可能没有 size: "20000100 B my_variable"
+     * 无 size: "20000100 B my_variable"
+     *           address  type name
      */
     private fun parseNmOutput(output: String) {
         // 带 size 的行: addr size type name
@@ -149,14 +151,18 @@ class ElfSymbolResolver {
         // 不带 size 的行: addr type name
         val withoutSize = Regex("""^([0-9a-fA-F]+)\s+([A-Za-z])\s+(\S+)$""", RegexOption.MULTILINE)
 
+        // 数据段符号类型（大小写均可）:
+        // B/b=BSS, D/d=Data, G/g=Small data, S/s=Small BSS, R/r=Read-only, C=Common
+        val dataSections = setOf("B", "b", "D", "d", "G", "g", "S", "s", "R", "r", "C")
+        // 排除: T/t=代码, U=未定义, W/w=弱符号(无定义), N=调试, A=绝对地址
+
         for (match in withSize.findAll(output)) {
             val addr = java.lang.Long.parseUnsignedLong(match.groupValues[1], 16)
             val size = match.groupValues[2].toInt(16)
             val section = match.groupValues[3]
             val name = match.groupValues[4]
 
-            // 过滤：只保留 Data/BSS 段的全局变量（排除函数、常量等）
-            if (section in setOf("B", "b", "D", "d", "G", "g", "S", "s")) {
+            if (section in dataSections && size > 0) {
                 symbolCache[name] = SymbolInfo(name, addr, size, section)
             }
         }
@@ -167,7 +173,7 @@ class ElfSymbolResolver {
             val section = match.groupValues[2]
             val name = match.groupValues[3]
 
-            if (section in setOf("B", "b", "D", "d", "G", "g", "S", "s")) {
+            if (section in dataSections) {
                 if (!symbolCache.containsKey(name)) {
                     symbolCache[name] = SymbolInfo(name, addr, 4, section)
                 }
