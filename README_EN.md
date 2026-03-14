@@ -55,7 +55,21 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 | J-Link GDB Server | ✅ | ✅ Telnet `memU32` |
 | Other GDB Servers | ✅ | ⚠️ Untested |
 
+## Quick Start
+
+**The plugin has zero external dependencies** — just download the ZIP and install:
+
+1. Download the latest `.zip` from [Releases](https://github.com/Szturin/Clion-Waveform-Plotter/releases)
+2. CLion → Settings → Plugins → ⚙ Gear icon → **Install Plugin from Disk**
+3. Select the downloaded ZIP → Restart CLion
+4. The **Waveform Plotter** panel appears at the bottom — you're all set
+
+> If you already have OpenOCD + ARM toolchain for embedded development, you have everything you need.
+> The plugin auto-detects CLion's debug configuration — no extra setup required.
+
 ## Prerequisites
+
+The plugin only requires your CLion embedded development environment to be working:
 
 - **CLion 2024.3 ~ 2025.3**
 - **ARM toolchain** (`arm-none-eabi-gcc`, `arm-none-eabi-nm`, etc.)
@@ -70,12 +84,6 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 Make sure `arm-none-eabi-nm` and `openocd` are on your system PATH so CLion can find them.
 
 ## Usage
-
-### Installation
-1. `./gradlew buildPlugin`
-2. CLion → Settings → Plugins → Gear icon → Install Plugin from Disk
-3. Select `build/distributions/clion-waveform-plotter-1.2.0.zip`
-4. Restart CLion
 
 ### Passive Mode
 1. Open the **Waveform Plotter** panel at the bottom

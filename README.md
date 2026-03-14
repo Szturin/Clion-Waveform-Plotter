@@ -55,7 +55,21 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 | J-Link GDB Server | ✅ | ✅ Telnet `memU32` |
 | 其他 GDB Server | ✅ | ⚠️ 需测试 |
 
+## 快速开始
+
+**插件本身无任何外部依赖**，下载 ZIP 即装即用：
+
+1. 从 [Releases](https://github.com/Szturin/Clion-Waveform-Plotter/releases) 下载最新 `.zip`
+2. CLion → Settings → Plugins → ⚙ 齿轮图标 → **Install Plugin from Disk**
+3. 选择下载的 ZIP 文件 → 重启 CLion
+4. 底部出现 **Waveform Plotter** 面板，即安装成功
+
+> 如果你使用 OpenOCD + ARM 工具链进行嵌入式开发，那你已经具备了所有条件。
+> 插件会自动检测 CLion 的调试配置，无需额外设置。
+
 ## 环境要求
+
+插件运行只需要你的 CLion 嵌入式开发环境已正常工作：
 
 - **CLion 2024.3 ~ 2025.3**
 - **ARM 工具链**（`arm-none-eabi-gcc`, `arm-none-eabi-nm` 等）
@@ -70,12 +84,6 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 确保 `arm-none-eabi-nm` 和 `openocd` 在系统 PATH 中，CLion 能够找到即可。
 
 ## 使用方法
-
-### 安装
-1. `./gradlew buildPlugin`
-2. CLion → Settings → Plugins → 齿轮图标 → Install Plugin from Disk
-3. 选择 `build/distributions/clion-waveform-plotter-1.2.0.zip`
-4. 重启 CLion
 
 ### 被动模式
 1. 打开底部 **Waveform Plotter** 面板
