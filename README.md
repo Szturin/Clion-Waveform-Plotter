@@ -57,7 +57,7 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 
 ## 环境要求
 
-- **CLion 2024.3+**
+- **CLion 2024.3 ~ 2025.3**
 - **ARM 工具链**（`arm-none-eabi-gcc`, `arm-none-eabi-nm` 等）
 - **OpenOCD**（Telnet 端口默认 4444）
 
@@ -116,7 +116,7 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 ./gradlew buildPlugin
 ```
 
-要求：JDK 21, CLion 2024.3+
+要求：JDK 21, CLion 2024.3 ~ 2025.3
 
 ## 项目结构
 

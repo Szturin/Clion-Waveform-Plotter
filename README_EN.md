@@ -57,7 +57,7 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 
 ## Prerequisites
 
-- **CLion 2024.3+**
+- **CLion 2024.3 ~ 2025.3**
 - **ARM toolchain** (`arm-none-eabi-gcc`, `arm-none-eabi-nm`, etc.)
 - **OpenOCD** (Telnet port defaults to 4444)
 
@@ -116,7 +116,7 @@ Make sure `arm-none-eabi-nm` and `openocd` are on your system PATH so CLion can 
 ./gradlew buildPlugin
 ```
 
-Requirements: JDK 21, CLion 2024.3+
+Requirements: JDK 21, CLion 2024.3 ~ 2025.3
 
 ## Project Structure
 
