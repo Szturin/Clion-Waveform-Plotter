@@ -45,10 +45,12 @@ Live Watch:
 | `PlotCanvas.kt` | 波形绘制 (Graphics2D)，万向拖拽，可配置刷新率/线宽/字体 |
 | `LiveWatchService.kt` | Live Watch 核心：地址解析、Telnet 通信、数据类型转换 |
 | `ElfSymbolResolver.kt` | ELF 符号表解析：arm-none-eabi-nm 解析变量地址（零暂停方案） |
+| `AddToPlotterAction.kt` | 编辑器右键菜单 Action：选中变量名 → Add to Waveform Plotter |
 | `WatchVariableCollector.kt` | 被动模式：断点暂停时通过 XDebuggerEvaluator 采集 |
 | `DebugSessionListener.kt` | 调试会话生命周期，暴露 started/paused/resumed 回调 |
 | `DataBuffer.kt` | 环形缓冲区，多通道，线程安全 |
 | `WaveformConfigService.kt` | 项目级配置持久化 (PersistentStateComponent) |
+| `WaveformToolWindowFactory.kt` | 工具窗口入口，注册 panel 引用供 Action 访问 |
 
 ## 构建命令
 ```bash
