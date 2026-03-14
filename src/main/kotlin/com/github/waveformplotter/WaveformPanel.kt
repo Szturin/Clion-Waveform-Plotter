@@ -47,7 +47,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
 
     // Live Watch 控件
     private val liveWatchBtn = JButton("\u25B6 Live")
-    private val freqSpinner = JSpinner(SpinnerNumberModel(50, 1, 100, 5)).apply {
+    private val freqSpinner = JSpinner(SpinnerNumberModel(50, 1, 500, 10)).apply {
         preferredSize = Dimension(60, preferredSize.height)
         toolTipText = "Sampling frequency (Hz)"
     }
@@ -551,7 +551,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         for (name in s.variableNames) {
             addChannelCheckbox(name, checked = tracked.contains(name))
         }
-        freqSpinner.value = s.liveWatchFrequency.coerceIn(1, 100)
+        freqSpinner.value = s.liveWatchFrequency.coerceIn(1, 500)
         portSpinner.value = s.telnetPort.coerceIn(1, 65535)
         // 恢复 UI 设置
         plotCanvas.fontSize = s.fontSize.coerceIn(8, 20)

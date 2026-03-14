@@ -8,8 +8,6 @@ import java.io.BufferedReader
 import java.io.InputStreamReader
 import java.io.PrintWriter
 import java.net.Socket
-import java.util.Timer
-import java.util.TimerTask
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -39,8 +37,8 @@ class LiveWatchService(
     /** ELF 符号解析器（无暂停方案） */
     val elfResolver = ElfSymbolResolver()
 
-    /** 采集定时器 */
-    private var timer: Timer? = null
+    /** 采集线程 */
+    private var samplerThread: Thread? = null
 
     /** OpenOCD Telnet 连接 */
     private var telnetSocket: Socket? = null
@@ -169,7 +167,8 @@ class LiveWatchService(
             disconnectTelnet()
             try {
                 val socket = Socket(host, port).apply {
-                    soTimeout = 2000  // 读超时 2s
+                    tcpNoDelay = true   // 禁用 Nagle 算法，小包立即发送
+                    soTimeout = 500     // 读超时 500ms（采样场景不需要等太久）
                 }
                 telnetSocket = socket
                 telnetWriter = PrintWriter(socket.getOutputStream(), true)
@@ -201,7 +200,7 @@ class LiveWatchService(
     }
 
     /**
-     * 发送 Telnet 命令并读取响应
+     * 发送单条 Telnet 命令并读取响应（阻塞读取，无 sleep 轮询）
      */
     private fun sendTelnetCommand(command: String): String? {
         synchronized(telnetLock) {
@@ -209,25 +208,17 @@ class LiveWatchService(
             val reader = telnetReader ?: return null
 
             try {
-                // 清空残留数据
                 while (reader.ready()) { reader.read() }
 
                 writer.println(command)
                 writer.flush()
 
-                // 读取响应（等待 OpenOCD 返回，以 ">" prompt 结束）
                 val sb = StringBuilder()
-                val deadline = System.currentTimeMillis() + 1000
-                while (System.currentTimeMillis() < deadline) {
-                    if (reader.ready()) {
-                        val ch = reader.read()
-                        if (ch == -1) break
-                        sb.append(ch.toChar())
-                        // OpenOCD telnet prompt 是 "> "
-                        if (sb.endsWith("> ")) break
-                    } else {
-                        Thread.sleep(1)
-                    }
+                while (true) {
+                    val ch = reader.read()
+                    if (ch == -1) break
+                    sb.append(ch.toChar())
+                    if (sb.endsWith("> ")) break
                 }
                 return sb.toString().removeSuffix("> ").trim()
             } catch (e: Exception) {
@@ -259,23 +250,36 @@ class LiveWatchService(
             return
         }
 
-        val intervalMs = (1000.0 / frequencyHz).toLong().coerceAtLeast(10)
-        log.info("Starting Live Watch: ${frequencyHz}Hz (${intervalMs}ms), telnet port=$telnetPort")
+        val intervalNs = (1_000_000_000L / frequencyHz).coerceAtLeast(1_000_000L)
+        log.info("Starting Live Watch: ${frequencyHz}Hz (${intervalNs / 1_000_000}ms), telnet port=$telnetPort")
 
-        timer = Timer("LiveWatch-Sampler", true).apply {
-            scheduleAtFixedRate(object : TimerTask() {
-                override fun run() {
-                    if (!isRunning.get()) { cancel(); return }
-                    sample()
+        // 专用采样线程，用 System.nanoTime 精确计时（避免 Timer 的 ~15ms 调度抖动）
+        samplerThread = Thread({
+            while (isRunning.get()) {
+                val start = System.nanoTime()
+                sample()
+                val elapsed = System.nanoTime() - start
+                val sleepNs = intervalNs - elapsed
+                if (sleepNs > 1_000_000L) {
+                    // 粗粒度 sleep + 细粒度自旋，兼顾 CPU 占用和精度
+                    val sleepMs = (sleepNs / 1_000_000L) - 1
+                    if (sleepMs > 0) Thread.sleep(sleepMs)
+                    // 剩余时间自旋（精确到 ~100μs）
+                    while (System.nanoTime() - start < intervalNs) {
+                        Thread.onSpinWait()
+                    }
                 }
-            }, intervalMs, intervalMs)
+            }
+        }, "LiveWatch-Sampler").apply {
+            isDaemon = true
+            start()
         }
     }
 
     fun stopLiveWatch() {
         if (!isRunning.getAndSet(false)) return
-        timer?.cancel()
-        timer = null
+        samplerThread?.interrupt()
+        samplerThread = null
         disconnectTelnet()
         log.info("Live Watch stopped, $sampleCount samples collected")
     }
@@ -286,26 +290,35 @@ class LiveWatchService(
 
     fun getResolvedEntries(): Map<String, WatchEntry> = watchEntries.toMap()
 
-    // ─── 采样核心（通过 Telnet）───
+    // ─── 采样核心（管线化 Telnet）───
 
+    /**
+     * 管线化采样：一次性发送所有 mdw/mdh/mdb 命令，一次性读取所有响应
+     *
+     * 原来: 发cmd1 → 等响应1 → 发cmd2 → 等响应2 → ... (N 次往返)
+     * 现在: 发cmd1\ncmd2\n...cmdN → 读响应1+响应2+...响应N (1 次往返)
+     *
+     * 效果: N 个变量从 N*RTT 降到 1*RTT，采样率提升 N 倍
+     */
     private fun sample() {
         val entries = watchEntries.values.toList()
         if (entries.isEmpty()) return
 
         try {
+            val responses = sendPipelinedCommands(entries)
+            if (responses == null || responses.size != entries.size) return
+
             val values = mutableMapOf<String, Double>()
-            for (entry in entries) {
+            for (i in entries.indices) {
+                val entry = entries[i]
+                val response = responses[i]
                 try {
-                    val cmd = buildTelnetReadCommand(entry)
-                    val response = sendTelnetCommand(cmd)
-                    if (response != null) {
-                        val rawValue = parseOpenocdResponse(response, entry)
-                        if (rawValue != null) {
-                            values[entry.name] = interpretBytes(rawValue, entry.dataType)
-                        }
+                    val rawValue = parseOpenocdResponse(response, entry)
+                    if (rawValue != null) {
+                        values[entry.name] = interpretBytes(rawValue, entry.dataType)
                     }
                 } catch (e: Exception) {
-                    log.debug("Read failed for '${entry.name}': ${e.message}")
+                    log.debug("Parse failed for '${entry.name}': ${e.message}")
                 }
             }
 
@@ -323,6 +336,53 @@ class LiveWatchService(
         } catch (e: Exception) {
             lastError = e.message
             log.debug("Sample failed: ${e.message}")
+        }
+    }
+
+    /**
+     * 管线化发送：所有命令一次性写入 TCP，然后一次性读取所有响应
+     * OpenOCD Telnet 逐行处理命令，响应按顺序返回，每条以 "> " prompt 结束
+     *
+     * 使用阻塞读取（依赖 soTimeout），避免 ready()+sleep 轮询延迟
+     */
+    private fun sendPipelinedCommands(entries: List<WatchEntry>): List<String>? {
+        synchronized(telnetLock) {
+            val writer = telnetWriter ?: return null
+            val reader = telnetReader ?: return null
+
+            try {
+                // 清空残留数据
+                while (reader.ready()) { reader.read() }
+
+                // 一次性发送所有命令（TCP_NODELAY 确保立即发出）
+                val sb = StringBuilder()
+                for (entry in entries) {
+                    sb.appendLine(buildTelnetReadCommand(entry))
+                }
+                writer.print(sb.toString())
+                writer.flush()
+
+                // 阻塞读取所有响应（soTimeout 保底，不用 sleep 轮询）
+                val responses = mutableListOf<String>()
+                val buf = StringBuilder()
+                var collected = 0
+
+                while (collected < entries.size) {
+                    val ch = reader.read()  // 阻塞读，soTimeout 超时会抛异常
+                    if (ch == -1) break
+                    buf.append(ch.toChar())
+                    if (buf.endsWith("> ")) {
+                        responses.add(buf.toString().removeSuffix("> ").trim())
+                        buf.clear()
+                        collected++
+                    }
+                }
+
+                return if (responses.size == entries.size) responses else null
+            } catch (e: Exception) {
+                log.debug("Pipelined command failed: ${e.message}")
+                return null
+            }
         }
     }
 
