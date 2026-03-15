@@ -333,7 +333,7 @@ class LiveWatchService(
                         dataBuffer.addChannel(name)
                     }
                 }
-                dataBuffer.pushAll(values)
+                dataBuffer.pushAll(values, System.nanoTime())
                 sampleCount++
                 onDataCollected()
                 lastError = null

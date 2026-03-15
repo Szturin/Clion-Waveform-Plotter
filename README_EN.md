@@ -1,4 +1,4 @@
-# Waveform Plotter v1.3 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.3.1 — CLion Embedded Debug Plugin
 
 [中文](README.md) | **English**
 
@@ -34,11 +34,14 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 
 ### Waveform Display
 
-- Multi-channel overlay (up to 8 channels)
+- **Real-time X-axis**: True time-based axis (oscilloscope-style, latest = 0, older = negative)
+- **Adaptive time units**: ms / μs toggle button, 1-2-5 friendly grid intervals
+- **Smart auto-tracking**: Auto-fit all data by default, sliding window after zoom
+- Multi-channel overlay (up to 8 channels, 10000-sample buffer)
 - **Free-form panning** (drag in any direction with left mouse button)
 - Y-axis auto-scale + manual zoom (scroll wheel)
-- X-axis zoom (Shift + scroll wheel)
-- Crosshair tooltip with value display on hover
+- X-axis zoom (Shift + scroll wheel, mouse-anchored)
+- Crosshair tooltip with time and value display on hover
 - Automatic NaN gap handling
 - CSV export
 

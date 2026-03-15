@@ -96,7 +96,7 @@ class WatchVariableCollector(
             for (name in tracked) {
                 aligned[name] = values[name] ?: Double.NaN
             }
-            dataBuffer.pushAll(aligned)
+            dataBuffer.pushAll(aligned, System.nanoTime())
             sampleCount++
             onDataCollected()
         }

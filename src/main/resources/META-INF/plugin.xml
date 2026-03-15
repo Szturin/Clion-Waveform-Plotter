@@ -19,6 +19,14 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <b>v1.3.1</b>
+        <ul>
+            <li><b>Real-time X-axis</b> — True time-based X-axis replacing sample index, oscilloscope-style negative time (latest = 0)</li>
+            <li><b>Auto-adaptive time units</b> — ms/μs toggle button, friendly 1-2-5 grid intervals like professional oscilloscopes</li>
+            <li><b>Smart auto-tracking</b> — Auto-fit all data by default, sliding window after zoom, mouse-anchored zoom</li>
+            <li><b>Larger buffer</b> — Data buffer increased to 10000 samples (200s at 50Hz)</li>
+        </ul>
+
         <b>v1.3.0</b>
         <ul>
             <li><b>High-Speed Sampling (HSS)</b> — Byte-level bulk I/O replaces character-by-character reading, zero-allocation prompt scanning, sampling rate up to 2000 Hz</li>

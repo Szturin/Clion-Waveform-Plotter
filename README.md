@@ -1,4 +1,4 @@
-# Waveform Plotter v1.3 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.3.1 — CLion Embedded Debug Plugin
 
 **中文** | [English](README_EN.md)
 
@@ -34,11 +34,14 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 
 ### 波形显示
 
-- 多通道叠加显示（最多 8 通道）
+- **真实时间轴**：X 轴显示真实时间（示波器风格，最新 = 0，旧 = 负值）
+- **自适应时间单位**：ms / μs 一键切换，1-2-5 友好网格间距
+- **智能自动追踪**：默认全览模式，缩放后自动切换为滑动窗口
+- 多通道叠加显示（最多 8 通道，10000 点缓冲）
 - **万向自由拖拽**（鼠标左键上下左右任意方向平移）
 - Y 轴自动缩放 + 手动缩放（滚轮）
-- X 轴缩放（Shift+滚轮）
-- 鼠标悬停十字线 + 带背景框的数值 tooltip
+- X 轴缩放（Shift+滚轮，以鼠标位置为锚点）
+- 鼠标悬停十字线 + 带背景框的数值 tooltip（含时间标注）
 - NaN 自动断线
 - CSV 导出
 

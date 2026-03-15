@@ -48,12 +48,12 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     // Live Watch 控件
     private val liveWatchBtn = JButton("\u25B6 Live")
     private val freqSpinner = JSpinner(SpinnerNumberModel(50, 1, 2000, 50)).apply {
-        preferredSize = Dimension(60, preferredSize.height)
+        preferredSize = Dimension(80, preferredSize.height)
         toolTipText = "Sampling frequency (Hz)"
     }
     private val freqLabel = JLabel("Hz")
     private val portSpinner = JSpinner(SpinnerNumberModel(4444, 1, 65535, 1)).apply {
-        preferredSize = Dimension(70, preferredSize.height)
+        preferredSize = Dimension(90, preferredSize.height)
         toolTipText = "OpenOCD Telnet port"
     }
     private val portLabel = JLabel("Port:")
@@ -66,6 +66,12 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     private val fftModeBtn = JButton("FFT").apply {
         toolTipText = "FFT frequency spectrum"
         margin = Insets(2, 8, 2, 8)
+    }
+
+    // 时间单位切换按钮
+    private val timeUnitBtn = JButton("ms").apply {
+        toolTipText = "Toggle time unit: ms / μs"
+        margin = Insets(2, 6, 2, 6)
     }
 
     // 设置按钮
@@ -168,8 +174,10 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         controlBar.add(Box.createHorizontalStrut(8))
         timeModeBtn.addActionListener { setDisplayMode(DisplayMode.TIME) }
         fftModeBtn.addActionListener { setDisplayMode(DisplayMode.FFT) }
+        timeUnitBtn.addActionListener { toggleTimeUnit() }
         controlBar.add(timeModeBtn)
         controlBar.add(fftModeBtn)
+        controlBar.add(timeUnitBtn)
         updateModeButtons()
 
         // --- Live Watch 控件 ---
@@ -347,9 +355,18 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         val isTime = plotCanvas.displayMode == DisplayMode.TIME
         timeModeBtn.isEnabled = !isTime
         fftModeBtn.isEnabled = isTime
+        timeUnitBtn.isVisible = isTime  // 仅时域模式显示
         // 高亮当前模式
         timeModeBtn.font = Font("SansSerif", if (isTime) Font.BOLD else Font.PLAIN, 12)
         fftModeBtn.font = Font("SansSerif", if (!isTime) Font.BOLD else Font.PLAIN, 12)
+    }
+
+    private fun toggleTimeUnit() {
+        val newUnit = if (plotCanvas.timeUnit == PlotCanvas.TimeUnit.MS)
+            PlotCanvas.TimeUnit.US else PlotCanvas.TimeUnit.MS
+        plotCanvas.timeUnit = newUnit
+        timeUnitBtn.text = newUnit.label
+        plotCanvas.repaint()
     }
 
     private fun toggleLiveWatch() {
