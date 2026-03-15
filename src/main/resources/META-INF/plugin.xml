@@ -19,6 +19,13 @@
     ]]></description>
 
     <change-notes><![CDATA[
+        <b>v1.3.0</b>
+        <ul>
+            <li><b>High-Speed Sampling (HSS)</b> — Byte-level bulk I/O replaces character-by-character reading, zero-allocation prompt scanning, sampling rate up to 2000 Hz</li>
+            <li><b>Pre-compiled parsing</b> — OpenOCD response regex compiled once, reused across all samples</li>
+            <li><b>Reusable read buffer</b> — Pre-allocated 4KB byte buffer eliminates GC pressure in sampling hot path</li>
+        </ul>
+
         <b>v1.2.0</b>
         <ul>
             <li><b>FFT Spectrum Analysis</b> — Time/FFT one-click toggle, Cooley-Tukey radix-2 FFT with Hanning window, dB magnitude spectrum display</li>

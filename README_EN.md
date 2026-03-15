@@ -1,4 +1,4 @@
-# Waveform Plotter v1.2 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.3 — CLion Embedded Debug Plugin
 
 [中文](README.md) | **English**
 
@@ -18,7 +18,7 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 
 - **Non-invasive**: Reads MCU memory directly via SWD MEM-AP — CPU keeps running
 - **Zero-halt startup**: Automatically resolves variable addresses from ELF symbol table — no MCU pause needed
-- Supports 1–500 Hz sampling rate (default 50 Hz)
+- Supports 1–2000 Hz sampling rate (default 50 Hz, HSS high-speed sampling mode)
 - Direct connection via OpenOCD Telnet port (bypasses GDB all-stop limitation)
 - Real-time display of data type and current value per variable
 - Supported types: int8/16/32, uint8/16/32, float, double

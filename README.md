@@ -1,4 +1,4 @@
-# Waveform Plotter v1.2 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.3 — CLion Embedded Debug Plugin
 
 **中文** | [English](README_EN.md)
 
@@ -18,7 +18,7 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 
 - **非侵入式**：通过 SWD MEM-AP 直读 MCU 内存，CPU 不停
 - **零暂停启动**：自动从 ELF 符号表解析变量地址，无需暂停 MCU
-- 支持 1-500Hz 采样频率（默认 50Hz）
+- 支持 1-2000Hz 采样频率（默认 50Hz，HSS 高速采样模式）
 - 通过 OpenOCD Telnet 端口直连（绕过 GDB all-stop 限制）
 - 变量实时显示数据类型和当前数值
 - 支持数据类型：int8/16/32, uint8/16/32, float, double
