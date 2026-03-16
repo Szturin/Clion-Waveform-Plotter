@@ -19,6 +19,12 @@ class WaveformConfigService : PersistentStateComponent<WaveformConfigService.Sta
         var liveWatchFrequency: Int = 50,
         var telnetPort: Int = 4444,
         var resolvedAddresses: MutableMap<String, String> = mutableMapOf(),
+        // RTT 设置
+        var dataSource: String = "Telnet",  // "Telnet" | "RTT"
+        var rttPort: Int = 9090,
+        var rttRamStart: String = "",  // 空=自动搜索多个RAM区域
+        var rttRamSize: String = "",
+        var rttAutoInit: Boolean = true,  // true=OpenOCD自动初始化, false=直连TCP
         // UI 设置
         var fontSize: Int = 12,
         var lineWidth: Float = 2.0f,

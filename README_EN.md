@@ -1,8 +1,8 @@
-# Waveform Plotter v1.3.1 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.3.2 — CLion Embedded Debug Plugin
 
 [中文](README.md) | **English**
 
-A CLion plugin for real-time waveform plotting + FFT spectrum analysis during embedded debugging.
+A CLion plugin for real-time waveform plotting + FFT spectrum analysis + RTT high-speed data streaming during embedded debugging.
 
 Designed for **OpenOCD** users (supports CMSIS-DAP / DAP-Link / ST-Link / J-Link).
 CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills the gap for DAP-Link and other debuggers.
@@ -22,6 +22,16 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 - Direct connection via OpenOCD Telnet port (bypasses GDB all-stop limitation)
 - Real-time display of data type and current value per variable
 - Supported types: int8/16/32, uint8/16/32, float, double
+
+### RTT High-Speed Data Stream (New in v1.3.2)
+
+- **SEGGER RTT protocol**: Receives firmware-side `printf` data via RTT channel with minimal latency
+- **OpenOCD auto-init**: One-click startup, automatically runs `rtt setup/start/server start`
+- **Multi-RAM region auto-scan**: Scans DTCM/AXI SRAM/SRAM1 regions automatically, compatible with all STM32 series
+- **Region caching**: Remembers last successful RAM region for instant restart
+- **Multi-server compatible**: OpenOCD RTT / J-Link RTT Viewer / pyOCD (disable auto-init for direct TCP)
+- **High throughput**: RTT polling interval 1ms, callback throttling at 60fps, supports kHz-level sampling
+- **Fully decoupled**: Independent of Debug Session / ELF / GDB — pure TCP text stream
 
 ### FFT Spectrum Analysis (New in v1.2)
 
@@ -52,11 +62,12 @@ CLion's built-in Live Watches only supports J-Link/ST-Link — this plugin fills
 
 ## Supported Debug Environments
 
-| Debugger | Passive Mode | Live Watch |
-|----------|-------------|------------|
-| OpenOCD (DAP-Link, ST-Link, J-Link) | ✅ | ✅ Telnet `mdw` |
-| J-Link GDB Server | ✅ | ✅ Telnet `memU32` |
-| Other GDB Servers | ✅ | ⚠️ Untested |
+| Debugger | Passive Mode | Live Watch | RTT |
+|----------|-------------|------------|-----|
+| OpenOCD (DAP-Link, ST-Link, J-Link) | ✅ | ✅ Telnet `mdw` | ✅ Auto-init |
+| J-Link GDB Server | ✅ | ✅ Telnet `memU32` | ✅ J-Link RTT Viewer |
+| pyOCD | ✅ | ⚠️ Untested | ✅ Direct TCP |
+| Other GDB Servers | ✅ | ⚠️ Untested | ⚠️ Needs RTT Server |
 
 ## Quick Start
 
@@ -106,6 +117,21 @@ Make sure `arm-none-eabi-nm` and `openocd` are on your system PATH so CLion can 
 > Live Watch can only monitor variables with fixed memory addresses (global / static variables).
 > It's recommended to mark monitored variables as `volatile` to avoid stale reads due to D-Cache.
 
+### RTT Mode
+1. **Firmware side**: Output data via SEGGER RTT as comma-separated values + newline
+   ```c
+   SEGGER_RTT_printf(0, "%.4f,%.4f\n", voltage, current);
+   ```
+2. Add matching variable names in the plugin (order must match printf)
+3. In ⚙ Settings, select data source **RTT**, configure port (default 9090)
+4. Start debugging → Click **▶ Live** → Auto-initializes RTT and starts capturing
+
+> **OpenOCD users**: Keep "Auto Init" checked — the plugin auto-runs `rtt setup/start/server start` via Telnet.
+>
+> **J-Link / pyOCD users**: Uncheck "Auto Init", start RTT Server manually, plugin connects directly to TCP port.
+>
+> **RAM region**: Auto-scans common Cortex-M regions (DTCM/AXI SRAM, etc.) by default. Specify RAM Start and Size in settings if needed.
+
 ### FFT Spectrum Analysis
 1. Capture waveform data (Passive mode or Live Watch)
 2. Click the **FFT** button in the toolbar to switch to frequency domain
@@ -138,6 +164,7 @@ src/main/kotlin/com/github/waveformplotter/
 ├── PlotCanvas.kt                 # Waveform rendering engine (time domain + FFT)
 ├── FFT.kt                        # Cooley-Tukey FFT (window caching + array reuse)
 ├── LiveWatchService.kt           # Live Watch sampling service (Telnet)
+├── RttService.kt                 # RTT data source (TCP connection to RTT Server, CSV parsing)
 ├── ElfSymbolResolver.kt          # ELF symbol resolution (zero-halt address lookup)
 ├── AddToPlotterAction.kt         # Editor right-click menu action
 ├── WatchVariableCollector.kt     # Passive mode variable collection
@@ -169,6 +196,24 @@ Time-domain data (last 1024 pts) → Hanning window → zero-pad to 2^N → Cool
 ```
 - Result caching: Recomputes only when DataBuffer version changes — zero redundant computation at 30/60 fps
 - Array reuse: FFT internal re/im arrays and window coefficients reused across frames, reducing GC pressure
+
+### RTT Data Flow Architecture
+```
+┌─ Auto-Init (OpenOCD Telnet) ─────────────────────────────┐
+│ rtt setup <RAM_START> <SIZE> "SEGGER RTT"                 │
+│ rtt start → auto-scans multiple RAM regions (DTCM/AXI/..) │
+│ rtt server start <PORT> 0                                 │
+│ rtt polling_interval 1  (1ms high-speed polling)          │
+└───────────────────────────────────────────────────────────┘
+                          ↓
+┌─ Data Capture ────────────────────────────────────────────┐
+│ TCP → RTT Server:9090 → BufferedReader → line-by-line     │
+│ "1.234,5.678\n" → split(",") → parseDouble → DataBuffer   │
+│ Callback throttle: 16ms interval (~60fps), avoids EDT     │
+└───────────────────────────────────────────────────────────┘
+```
+- Protocol: Firmware uses `SEGGER_RTT_printf(0, "%.4f,%.4f\n", v1, v2)`
+- Fully decoupled: No dependency on Debug Session / ELF / GDB — compatible with any RTT Server
 
 Live Watch leverages the MEM-AP (Memory Access Port) in ARM Cortex-M debug architecture,
 reading MCU memory via SWD as an independent bus master — runs in parallel with the CPU, fully non-invasive.

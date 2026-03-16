@@ -1,8 +1,8 @@
-# Waveform Plotter v1.3.1 — CLion Embedded Debug Plugin
+# Waveform Plotter v1.3.2 — CLion Embedded Debug Plugin
 
 **中文** | [English](README_EN.md)
 
-CLion 嵌入式调试插件，提供实时波形绘制 + FFT 频谱分析功能。
+CLion 嵌入式调试插件，提供实时波形绘制 + FFT 频谱分析 + RTT 高速数据流功能。
 
 专为 **OpenOCD** 用户设计（支持 CMSIS-DAP / DAP-Link / ST-Link / J-Link）。
 CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP-Link 等调试器的空白。
@@ -22,6 +22,16 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 - 通过 OpenOCD Telnet 端口直连（绕过 GDB all-stop 限制）
 - 变量实时显示数据类型和当前数值
 - 支持数据类型：int8/16/32, uint8/16/32, float, double
+
+### RTT 高速数据流（v1.3.2 新增）
+
+- **SEGGER RTT 协议**：通过 RTT 通道接收固件端 `printf` 数据，极低延迟
+- **OpenOCD 自动初始化**：一键启动，自动执行 `rtt setup/start/server start`
+- **多 RAM 区域自动搜索**：自动扫描 DTCM/AXI SRAM/SRAM1 等区域，兼容 STM32 全系列
+- **区域缓存加速**：记住上次成功的 RAM 区域，二次启动秒开
+- **兼容多种 RTT Server**：OpenOCD RTT / J-Link RTT Viewer / pyOCD（关闭自动初始化直连 TCP）
+- **高吞吐**：RTT polling interval 1ms，回调节流 60fps，支持 kHz 级采样
+- **完全解耦**：不依赖 Debug Session / ELF / GDB，纯 TCP 文本流
 
 ### FFT 频谱分析（v1.2 新增）
 
@@ -52,11 +62,12 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 
 ## 支持的调试环境
 
-| 调试器 | 被动模式 | Live Watch |
-|--------|---------|------------|
-| OpenOCD（含 DAP-Link, ST-Link, J-Link） | ✅ | ✅ Telnet `mdw` |
-| J-Link GDB Server | ✅ | ✅ Telnet `memU32` |
-| 其他 GDB Server | ✅ | ⚠️ 需测试 |
+| 调试器 | 被动模式 | Live Watch | RTT |
+|--------|---------|------------|-----|
+| OpenOCD（含 DAP-Link, ST-Link, J-Link） | ✅ | ✅ Telnet `mdw` | ✅ 自动初始化 |
+| J-Link GDB Server | ✅ | ✅ Telnet `memU32` | ✅ J-Link RTT Viewer |
+| pyOCD | ✅ | ⚠️ 需测试 | ✅ 直连 TCP |
+| 其他 GDB Server | ✅ | ⚠️ 需测试 | ⚠️ 需 RTT Server |
 
 ## 快速开始
 
@@ -106,6 +117,21 @@ CLion 原生 Live Watches 仅支持 J-Link/ST-Link —— 本插件填补了 DAP
 > Live Watch 只能监控有固定地址的变量（全局变量、静态变量）。
 > 建议监控变量加 `volatile` 关键字，避免 D-Cache 导致读到旧值。
 
+### RTT 模式
+1. **固件端**：使用 SEGGER RTT 输出数据，格式为逗号分隔数值 + 换行
+   ```c
+   SEGGER_RTT_printf(0, "%.4f,%.4f\n", voltage, current);
+   ```
+2. 在插件中添加对应变量名（顺序与 printf 一致）
+3. ⚙ 设置中选择数据源 **RTT**，配置端口（默认 9090）
+4. 启动调试 → 点 **▶ Live** → 自动初始化 RTT 并开始采集
+
+> **OpenOCD 用户**：保持"自动初始化"勾选，插件会自动通过 Telnet 执行 `rtt setup/start/server start`。
+>
+> **J-Link / pyOCD 用户**：取消"自动初始化"，手动启动 RTT Server，插件直连 TCP 端口。
+>
+> **RAM 区域**：默认自动搜索多个 Cortex-M 常见区域（DTCM/AXI SRAM 等）。如需指定，在设置中填写 RAM Start 和 Size。
+
 ### FFT 频谱分析
 1. 采集波形数据（被动模式或 Live Watch）
 2. 点控制栏 **FFT** 按钮切换到频域视图
@@ -138,6 +164,7 @@ src/main/kotlin/com/github/waveformplotter/
 ├── PlotCanvas.kt                 # 波形绘制引擎（时域 + FFT 频域）
 ├── FFT.kt                        # Cooley-Tukey FFT 算法（窗函数缓存 + 数组复用）
 ├── LiveWatchService.kt           # Live Watch 实时采集服务（Telnet）
+├── RttService.kt                 # RTT 数据源（TCP 连接 RTT Server，CSV 解析）
 ├── ElfSymbolResolver.kt          # ELF 符号表解析（零暂停地址解析）
 ├── AddToPlotterAction.kt         # 编辑器右键菜单 Action
 ├── WatchVariableCollector.kt     # 被动模式变量采集
@@ -167,6 +194,24 @@ src/main/kotlin/com/github/waveformplotter/
 ```
 - 结果缓存：仅 DataBuffer 版本号变化时重算，30/60fps 刷新零重复计算
 - 工作数组复用：FFT 内部 re/im 数组和窗函数系数跨帧复用，减少 GC 压力
+
+### RTT 数据流架构
+```
+┌─ 自动初始化（OpenOCD Telnet） ──────────────────────────┐
+│ rtt setup <RAM_START> <SIZE> "SEGGER RTT"                │
+│ rtt start → 自动扫描多个 RAM 区域（DTCM/AXI SRAM/...）    │
+│ rtt server start <PORT> 0                                │
+│ rtt polling_interval 1  (1ms 高速轮询)                    │
+└──────────────────────────────────────────────────────────┘
+                         ↓
+┌─ 数据采集 ─────────────────────────────────────────────┐
+│ TCP → RTT Server:9090 → BufferedReader → 逐行读取        │
+│ "1.234,5.678\n" → split(",") → parseDouble → DataBuffer  │
+│ 回调节流: 16ms 间隔 (~60fps)，避免 EDT 过载              │
+└──────────────────────────────────────────────────────────┘
+```
+- 协议约定：固件端 `SEGGER_RTT_printf(0, "%.4f,%.4f\n", v1, v2)`
+- 完全解耦：不依赖 Debug Session / ELF / GDB，兼容任何 RTT Server
 
 Live Watch 利用 ARM Cortex-M 调试架构中的 MEM-AP（Memory Access Port），
 通过 SWD 调试口作为独立总线主控读取 MCU 内存，与 CPU 并行工作，零侵入。

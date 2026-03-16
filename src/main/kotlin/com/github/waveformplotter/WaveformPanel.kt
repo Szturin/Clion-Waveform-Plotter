@@ -35,6 +35,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     private val liveWatchService = LiveWatchService(dataBuffer) {
         SwingUtilities.invokeLater { updateChannelValues(); updateStatusBar() }
     }
+    private val rttService = RttService(dataBuffer) {
+        SwingUtilities.invokeLater { updateChannelValues(); updateStatusBar() }
+    }
     private val sessionListener = DebugSessionListener(project, collector) { active ->
         SwingUtilities.invokeLater { updateSessionState(active) }
     }
@@ -47,16 +50,14 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
 
     // Live Watch 控件
     private val liveWatchBtn = JButton("\u25B6 Live")
+    private val dataSourceCombo = JComboBox(arrayOf("Telnet", "RTT")).apply {
+        toolTipText = "Data source: Telnet (OpenOCD polling) / RTT (TCP stream)"
+    }
     private val freqSpinner = JSpinner(SpinnerNumberModel(50, 1, 2000, 50)).apply {
         preferredSize = Dimension(80, preferredSize.height)
-        toolTipText = "Sampling frequency (Hz)"
+        toolTipText = "Sampling frequency (Hz) — Telnet mode only"
     }
     private val freqLabel = JLabel("Hz")
-    private val portSpinner = JSpinner(SpinnerNumberModel(4444, 1, 65535, 1)).apply {
-        preferredSize = Dimension(90, preferredSize.height)
-        toolTipText = "OpenOCD Telnet port"
-    }
-    private val portLabel = JLabel("Port:")
 
     // 时域/频域切换按钮
     private val timeModeBtn = JButton("Time").apply {
@@ -117,7 +118,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
             SwingUtilities.invokeLater {
                 val base = "  #${collector.sampleCount} samples | $sampleCount pts | Y: $yRange"
                 statusLabel.text = base
-                if (liveWatchService.isRunning.get()) {
+                if (liveWatchService.isRunning.get() || rttService.isRunning.get()) {
                     updateLiveStatus()
                 }
             }
@@ -188,14 +189,13 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         controlBar.add(Box.createHorizontalStrut(8))
 
         liveWatchBtn.foreground = colorIdle
-        liveWatchBtn.toolTipText = "Start/Stop Live Watch (non-invasive memory monitoring via OpenOCD Telnet)"
+        liveWatchBtn.toolTipText = "Start/Stop Live Watch"
         liveWatchBtn.addActionListener { toggleLiveWatch() }
+        dataSourceCombo.addActionListener { onDataSourceChanged() }
         controlBar.add(liveWatchBtn)
+        controlBar.add(dataSourceCombo)
         controlBar.add(freqSpinner)
         controlBar.add(freqLabel)
-        controlBar.add(Box.createHorizontalStrut(8))
-        controlBar.add(portLabel)
-        controlBar.add(portSpinner)
 
         controlBar.add(Box.createHorizontalGlue())
         controlBar.add(sessionStatusLabel)
@@ -331,7 +331,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         val components = channelCheckPanel.components.toList()
         for (comp in components) {
             if (comp is JPanel) {
-                val hasTarget = comp.components.any { it is JCheckBox && (it as JCheckBox).text == name }
+                val hasTarget = comp.components.any { it is JCheckBox && it.text == name }
                 if (hasTarget) {
                     channelCheckPanel.remove(comp)
                     break
@@ -369,13 +369,26 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         plotCanvas.repaint()
     }
 
+    private fun isRttMode() = dataSourceCombo.selectedItem == "RTT"
+
+    private fun onDataSourceChanged() {
+        // RTT 模式下隐藏频率控件（速率由固件决定）
+        val isRtt = isRttMode()
+        freqSpinner.isVisible = !isRtt
+        freqLabel.isVisible = !isRtt
+        updateButtonStates()
+        saveConfig()  // 持久化 dataSource 选择
+    }
+
     private fun toggleLiveWatch() {
-        if (liveWatchService.isRunning.get()) {
-            stopLiveWatch()
+        if (isRttMode()) {
+            if (rttService.isRunning.get()) stopRtt() else startRtt()
         } else {
-            startLiveWatch()
+            if (liveWatchService.isRunning.get()) stopLiveWatch() else startLiveWatch()
         }
     }
+
+    // ── Telnet 模式 ──
 
     private fun startLiveWatch() {
         val session = sessionListener.getCurrentSession()
@@ -394,7 +407,8 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         }
 
         val freq = freqSpinner.value as Int
-        val port = portSpinner.value as Int
+        val config = WaveformConfigService.getInstance(project)
+        val port = config.state.telnetPort
 
         liveWatchBtn.text = "\u23F3 Resolving..."
         liveWatchBtn.isEnabled = false
@@ -412,11 +426,9 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         }
 
         if (unresolvedVars.isEmpty()) {
-            // 全部通过 ELF 解析成功 — 无需暂停 MCU
             log.info("All ${trackedVars.size} variables resolved via ELF (no pause needed)")
             launchLiveWatch(port, freq)
         } else {
-            // 有未解析变量 — 回退 GDB（需 MCU 暂停）
             log.info("$elfResolved resolved via ELF, ${unresolvedVars.size} need GDB fallback")
             liveWatchService.resolveVariables(session, unresolvedVars) { gdbResolved ->
                 SwingUtilities.invokeLater {
@@ -451,7 +463,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         liveWatchBtn.isEnabled = true
         liveWatchBtn.foreground = colorRunning
         freqSpinner.isEnabled = false
-        portSpinner.isEnabled = false
+        dataSourceCombo.isEnabled = false
         updateLiveStatus()
     }
 
@@ -460,24 +472,113 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         liveWatchBtn.text = "\u25B6 Live"
         liveWatchBtn.foreground = colorIdle
         freqSpinner.isEnabled = true
-        portSpinner.isEnabled = true
+        dataSourceCombo.isEnabled = true
+        liveStatusLabel.text = ""
+    }
+
+    // ── RTT 模式 ──
+
+    private fun startRtt() {
+        val trackedVars = collector.trackedVariables.toList()
+        if (trackedVars.isEmpty()) {
+            liveStatusLabel.text = "No variables selected  "
+            liveStatusLabel.foreground = colorError
+            return
+        }
+
+        val config = WaveformConfigService.getInstance(project)
+        val telnetPort = config.state.telnetPort
+        val rttPort = config.state.rttPort
+        val ramStart = config.state.rttRamStart
+        val ramSize = config.state.rttRamSize
+        val autoInit = config.state.rttAutoInit
+
+        // UI 进入 initializing 状态
+        liveStatusLabel.text = if (autoInit) "RTT: initializing...  " else "RTT: connecting...  "
+        liveStatusLabel.foreground = colorRunning
+        liveWatchBtn.isEnabled = false
+        dataSourceCombo.isEnabled = false
+
+        // 后台线程执行初始化 + 连接（避免阻塞 EDT）
+        Thread({
+            if (autoInit) {
+                val initOk = rttService.initOpenOcdRtt(telnetPort, rttPort, ramStart, ramSize)
+                if (!initOk) {
+                    SwingUtilities.invokeLater {
+                        liveWatchBtn.isEnabled = true
+                        liveWatchBtn.foreground = colorError
+                        dataSourceCombo.isEnabled = true
+                        liveStatusLabel.text = (rttService.lastError ?: "RTT init failed") + "  "
+                        liveStatusLabel.foreground = colorError
+                    }
+                    return@Thread
+                }
+                // 等待 OpenOCD RTT Server 就绪
+                Thread.sleep(100)
+            }
+
+            rttService.startRtt("localhost", rttPort, trackedVars)
+
+            SwingUtilities.invokeLater {
+                if (rttService.lastError != null) {
+                    liveWatchBtn.isEnabled = true
+                    liveWatchBtn.foreground = colorError
+                    dataSourceCombo.isEnabled = true
+                    liveStatusLabel.text = rttService.lastError + "  "
+                    liveStatusLabel.foreground = colorError
+                } else {
+                    liveWatchBtn.isEnabled = true
+                    liveWatchBtn.text = "\u25A0 RTT"
+                    liveWatchBtn.foreground = colorRunning
+                    updateLiveStatus()
+                }
+            }
+        }, "RTT-Init").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun stopRtt() {
+        rttService.stopRtt()
+        val config = WaveformConfigService.getInstance(project)
+        if (config.state.rttAutoInit) {
+            rttService.stopOpenOcdRtt(config.state.telnetPort)
+        }
+        liveWatchBtn.text = "\u25B6 Live"
+        liveWatchBtn.foreground = colorIdle
+        dataSourceCombo.isEnabled = true
         liveStatusLabel.text = ""
     }
 
     private fun updateLiveStatus() {
-        if (!liveWatchService.isRunning.get()) return
-
-        val error = liveWatchService.lastError
-        if (error != null) {
-            liveStatusLabel.text = "Live: error  "
-            liveStatusLabel.foreground = colorError
-            liveStatusLabel.toolTipText = error
+        if (isRttMode()) {
+            if (!rttService.isRunning.get()) return
+            val error = rttService.lastError
+            if (error != null) {
+                liveStatusLabel.text = "RTT: error  "
+                liveStatusLabel.foreground = colorError
+                liveStatusLabel.toolTipText = error
+            } else {
+                val config = WaveformConfigService.getInstance(project)
+                liveStatusLabel.text = "RTT: tcp:${config.state.rttPort} (${rttService.sampleCount})  "
+                liveStatusLabel.foreground = colorRunning
+                liveStatusLabel.toolTipText = null
+            }
         } else {
-            val freq = freqSpinner.value
-            val port = portSpinner.value
-            liveStatusLabel.text = "Live: telnet:$port@${freq}Hz (${liveWatchService.sampleCount})  "
-            liveStatusLabel.foreground = colorRunning
-            liveStatusLabel.toolTipText = null
+            if (!liveWatchService.isRunning.get()) return
+            val error = liveWatchService.lastError
+            if (error != null) {
+                liveStatusLabel.text = "Live: error  "
+                liveStatusLabel.foreground = colorError
+                liveStatusLabel.toolTipText = error
+            } else {
+                val freq = freqSpinner.value
+                val config = WaveformConfigService.getInstance(project)
+                liveStatusLabel.text = "Live: telnet:${config.state.telnetPort}@${freq}Hz (${liveWatchService.sampleCount})  "
+                liveStatusLabel.foreground = colorRunning
+                liveStatusLabel.toolTipText = null
+            }
         }
     }
 
@@ -541,7 +642,8 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     private fun updateButtonStates() {
         recordBtn.isEnabled = !collector.recording
         stopBtn.isEnabled = collector.recording
-        liveWatchBtn.isEnabled = hasActiveSession || liveWatchService.isRunning.get()
+        // RTT 模式不需要 debug session
+        liveWatchBtn.isEnabled = isRttMode() || hasActiveSession || liveWatchService.isRunning.get() || rttService.isRunning.get()
     }
 
     private fun updateSessionState(active: Boolean) {
@@ -555,6 +657,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         if (!active && liveWatchService.isRunning.get()) {
             stopLiveWatch()
         }
+        // RTT 不依赖 debug session，不停止
         updateButtonStates()
     }
 
@@ -594,7 +697,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
         s.variableNames = channelCheckboxes.keys.toMutableList()
         s.trackedVariables = collector.trackedVariables.toMutableList()
         s.liveWatchFrequency = freqSpinner.value as Int
-        s.telnetPort = portSpinner.value as Int
+        s.dataSource = dataSourceCombo.selectedItem as String
         s.fontSize = plotCanvas.fontSize
         s.lineWidth = plotCanvas.lineWidth
         s.refreshFps = if (plotCanvas.refreshIntervalMs <= 17) 60 else 30
@@ -608,7 +711,8 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
             addChannelCheckbox(name, checked = tracked.contains(name))
         }
         freqSpinner.value = s.liveWatchFrequency.coerceIn(1, 2000)
-        portSpinner.value = s.telnetPort.coerceIn(1, 65535)
+        dataSourceCombo.selectedItem = s.dataSource
+        onDataSourceChanged()
         // 恢复 UI 设置
         plotCanvas.fontSize = s.fontSize.coerceIn(8, 20)
         plotCanvas.lineWidth = s.lineWidth.coerceIn(0.5f, 5.0f)
@@ -659,41 +763,117 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
     }
 
     private fun showSettingsDialog() {
+        val config = WaveformConfigService.getInstance(project)
         val panel = JPanel(GridBagLayout())
         val gbc = GridBagConstraints().apply {
             insets = Insets(4, 8, 4, 8)
             anchor = GridBagConstraints.WEST
+            fill = GridBagConstraints.HORIZONTAL
         }
 
+        var row = 0
+
+        // ── 连接设置 ──
+        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 2
+        panel.add(JLabel("── Connection ──").apply {
+            foreground = JBColor(Color(0x666666), Color(0x999999))
+        }, gbc)
+        gbc.gridwidth = 1
+
+        // Telnet Port
+        row++
+        val telnetPortSpinner = JSpinner(SpinnerNumberModel(config.state.telnetPort, 1, 65535, 1)).apply {
+            preferredSize = Dimension(90, preferredSize.height)
+        }
+        gbc.gridx = 0; gbc.gridy = row
+        panel.add(JLabel("Telnet Port:"), gbc)
+        gbc.gridx = 1
+        panel.add(telnetPortSpinner, gbc)
+
+        // RTT Port
+        row++
+        val rttPortSpinner = JSpinner(SpinnerNumberModel(config.state.rttPort, 1, 65535, 1)).apply {
+            preferredSize = Dimension(90, preferredSize.height)
+        }
+        gbc.gridx = 0; gbc.gridy = row
+        panel.add(JLabel("RTT Port:"), gbc)
+        gbc.gridx = 1
+        panel.add(rttPortSpinner, gbc)
+
+        // RTT RAM Start
+        row++
+        val ramStartField = JTextField(config.state.rttRamStart, 12).apply {
+            toolTipText = "Leave empty for auto-scan (0x20000000, 0x24000000, ...)"
+        }
+        gbc.gridx = 0; gbc.gridy = row
+        panel.add(JLabel("RAM Start:"), gbc)
+        gbc.gridx = 1
+        panel.add(ramStartField, gbc)
+
+        // RTT RAM Size
+        row++
+        val ramSizeField = JTextField(config.state.rttRamSize, 12).apply {
+            toolTipText = "Leave empty for auto-scan"
+        }
+        gbc.gridx = 0; gbc.gridy = row
+        panel.add(JLabel("RAM Size:"), gbc)
+        gbc.gridx = 1
+        panel.add(ramSizeField, gbc)
+
+        // RTT Auto Init (OpenOCD)
+        row++
+        val autoInitCheckbox = JCheckBox("OpenOCD Auto Init", config.state.rttAutoInit).apply {
+            toolTipText = "Auto send rtt setup/start/server via Telnet. Disable for J-Link RTT Server or manual setup."
+        }
+        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 2
+        panel.add(autoInitCheckbox, gbc)
+        gbc.gridwidth = 1
+
+        // ── 显示设置 ──
+        row++
+        gbc.gridx = 0; gbc.gridy = row; gbc.gridwidth = 2
+        panel.add(JLabel("── Display ──").apply {
+            foreground = JBColor(Color(0x666666), Color(0x999999))
+        }, gbc)
+        gbc.gridwidth = 1
+
         // 字体大小
+        row++
         val fontSizeSpinner = JSpinner(SpinnerNumberModel(plotCanvas.fontSize, 8, 20, 1))
-        gbc.gridx = 0; gbc.gridy = 0
+        gbc.gridx = 0; gbc.gridy = row
         panel.add(JLabel("Font Size:"), gbc)
         gbc.gridx = 1
         panel.add(fontSizeSpinner, gbc)
 
         // 波形线宽
+        row++
         val lineWidthSpinner = JSpinner(SpinnerNumberModel(plotCanvas.lineWidth.toDouble(), 0.5, 5.0, 0.5))
-        gbc.gridx = 0; gbc.gridy = 1
+        gbc.gridx = 0; gbc.gridy = row
         panel.add(JLabel("Line Width:"), gbc)
         gbc.gridx = 1
         panel.add(lineWidthSpinner, gbc)
 
         // 刷新率
+        row++
         val refreshRates = arrayOf("30 fps", "60 fps")
         val refreshCombo = JComboBox(refreshRates).apply {
             selectedIndex = if (plotCanvas.refreshIntervalMs <= 17) 1 else 0
         }
-        gbc.gridx = 0; gbc.gridy = 2
+        gbc.gridx = 0; gbc.gridy = row
         panel.add(JLabel("Refresh Rate:"), gbc)
         gbc.gridx = 1
         panel.add(refreshCombo, gbc)
 
         val result = JOptionPane.showConfirmDialog(
-            this, panel, "Display Settings",
+            this, panel, "Settings",
             JOptionPane.OK_CANCEL_OPTION, JOptionPane.PLAIN_MESSAGE
         )
         if (result == JOptionPane.OK_OPTION) {
+            config.state.telnetPort = telnetPortSpinner.value as Int
+            config.state.rttPort = rttPortSpinner.value as Int
+            config.state.rttRamStart = ramStartField.text.trim()
+            config.state.rttRamSize = ramSizeField.text.trim()
+            config.state.rttAutoInit = autoInitCheckbox.isSelected
             plotCanvas.fontSize = fontSizeSpinner.value as Int
             plotCanvas.lineWidth = (lineWidthSpinner.value as Double).toFloat()
             plotCanvas.refreshIntervalMs = if (refreshCombo.selectedIndex == 1) 16 else 33
@@ -705,6 +885,7 @@ class WaveformPanel(private val project: Project) : JPanel(BorderLayout()), Disp
 
     override fun dispose() {
         liveWatchService.stopLiveWatch()
+        rttService.stopRtt()
         saveConfig()
         plotCanvas.dispose()
         sessionListener.dispose()
